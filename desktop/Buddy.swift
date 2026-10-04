@@ -13,7 +13,7 @@ var size: CGFloat { let v = UserDefaults.standard.double(forKey: "size"); return
 let idleFrames: [NSImage] = ((try? FileManager.default.contentsOfDirectory(atPath: Bundle.main.resourcePath ?? "")) ?? [])
     .filter { $0.hasPrefix("idle_") && $0.hasSuffix(".png") }.sorted()
     .compactMap { NSImage(contentsOfFile: (Bundle.main.resourcePath ?? "") + "/" + $0) }
-let idleFPS = 12.0
+let idleFPS = 8.0 // frames were sampled at 8 fps from the clip
 let sleepyAfter: Double = 30 * 60 * 1000 // ms with no activity before the robot dozes off
 
 /// Mood art bundled in Contents/Resources (built from desktop/art). Missing art falls back to the drawn blob.
@@ -255,7 +255,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The idle clip has its own motion (and blink), so it replaces the bob in the calm mood.
         if view.mood == "calm" && !idleFrames.isEmpty {
             view.phase = 0
-            view.idleFrame = Int(Date().timeIntervalSince1970 * idleFPS) % idleFrames.count
+            // Ping-pong: forward through the clip, then back, so the loop never jumps.
+            let n = idleFrames.count, cycle = max(1, 2 * n - 2)
+            let t = Int(Date().timeIntervalSince1970 * idleFPS) % cycle
+            view.idleFrame = t < n ? t : cycle - t
         } else {
             view.idleFrame = nil
         }
