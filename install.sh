@@ -40,6 +40,7 @@ BUILD="$ROOT/desktop/build/CodeBuddy.app"
 rm -rf "$BUILD"; mkdir -p "$BUILD/Contents/MacOS"
 cp "$ROOT/desktop/Info.plist" "$BUILD/Contents/"
 mkdir -p "$BUILD/Contents/Resources" && cp "$ROOT"/desktop/art/*.png "$BUILD/Contents/Resources/"
+cp "$ROOT"/desktop/voice/*.mp3 "$BUILD/Contents/Resources/"
 swiftc -O -swift-version 5 "$ROOT/desktop/Buddy.swift" -o "$BUILD/Contents/MacOS/CodeBuddy"
 mkdir -p "$HOME/Applications"; rm -rf "$APP"; cp -R "$BUILD" "$APP"
 

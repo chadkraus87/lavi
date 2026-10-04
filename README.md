@@ -1,8 +1,8 @@
-# CodeBuddy
+# CodeBuddy: meet Lavi
 
-A coding buddy that suggests the next step in every Claude Code session. You see it in three places:
+**Lavi** is a little lavender robot with headphones and a coding buddy that suggests the next step in every Claude Code session. You see it in three places:
 
-- **In the session** (desktop app, CLI, and the phone via Remote Control): a `🤖 next step` entry on the status line, plus a `/buddy` pane.
+- **In the session** (desktop app, CLI, and the phone via Remote Control): a `🤖 lavi: next step` entry on the status line, a band of ready-to-send prompts above the message box, and a `/lavi` pane (`/buddy` works too).
 - **On your desktop**: a small lavender robot with headphones, shown whenever the Claude app or a `claude` process is running. Its face shows the session's state. Hover over it to see the advice. Click it for the full list of steps and every session.
 - **On your phone**: Claude Code's built-in Remote Control. Open any session in the Claude mobile app to message it. The buddy's status entry and pane draw there too, and it **pings you** when something is worth coming back for (see below).
 
@@ -47,7 +47,28 @@ For a model's opinion, run `/buddy next` or press **Ask buddy** in the pane. It 
 
 It talks like a chill friend: plain words, the real file, command or number, and the reason in a sentence. For example: *"good time to save a checkpoint. commit what you've got. 12 files changed and no commit in 50 min. a commit is your undo button."*
 
-**Ask buddy** (`/buddy next`) uses the same voice. Its prompt in `register.tsx` still requires the single best next step, the reasoning, the risk, and specific files and commands.
+**Ask Lavi** (`/lavi next`) uses the same voice. Its prompt in `register.tsx` still requires the single best next step, the reasoning, the risk, and specific files and commands.
+
+## Lavi's voice
+
+Lavi talks in a chill-friend voice designed in ElevenLabs. The voice is saved as **Lavi** in your ElevenLabs library, id `HCx2PwbeGgmrPl8yw3w0`. The 17 short lines were recorded once (`desktop/voice/voice-*.mp3`; their text is in `desktop/voice/lines.json`) and play offline, so there's no API key on the Mac and no cost per use. Spoken lines carry the gist; the speech bubble shows the exact numbers and names.
+
+| When | Lavi says |
+|---|---|
+| you click Lavi | the current advice ("tests are failing. let's fix those first.") or "all good" |
+| the advice changes | that advice's line |
+| a 3+ min task finishes while you're at the Mac | "done with that big one. come take a look." |
+| a session opens | a greeting (at most every 10 min) |
+| the Claude app quits | a goodbye. Lavi stays on screen until it finishes, then hides |
+| you copy a prompt from the menu | "copied. paste it in and hit enter." |
+
+While Lavi talks, its screen-mouth moves with the loudness of the audio.
+
+**Quiet rules:** at most one line every 20 s, except when you click. Silent in quiet hours (10pm–8am), unless you click. Menu → **Voice** has *Lavi talks* (on/off), Volume low/medium/high, and *Quiet 10pm–8am*.
+
+**Not handled:** macOS doesn't let apps read whether a Focus mode is on, so use mute or quiet hours during meetings.
+
+**Adding or changing a line:** edit `lines.json`, generate it with the Lavi voice (ElevenLabs `eleven_v3`), save it as `voice-<id>.mp3`, then rerun `./install.sh`.
 
 ## Ready-to-send prompts
 
@@ -75,7 +96,7 @@ The mod calls Claude Code's own `PushNotification` tool. That shows a desktop ba
 | waiting on you | Claude asked you a question, or needs your OK to run something |
 | gentle nudge | 30 min after a turn, there's still uncommitted work (once per session) |
 
-Pings are spaced at least 2 minutes apart per session. The wording and thresholds live in `mod/hooks/pings.ts`. Commands: `/buddy pings off`, `/buddy pings on`, `/buddy pings test`.
+Pings are spaced at least 2 minutes apart per session. The wording and thresholds live in `mod/hooks/pings.ts`. Commands: `/lavi pings off`, `/lavi pings on`, `/lavi pings test`.
 
 ## Moods
 

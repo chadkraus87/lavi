@@ -2,6 +2,7 @@
 // Reads ~/.claude/codebuddy/sessions/*.json (written by the codebuddy mod) and
 // ~/.claude/projects/*/*.jsonl (Claude Code transcripts). No dependencies.
 import AppKit
+import AVFoundation
 
 let home = FileManager.default.homeDirectoryForCurrentUser
 let buddyDir = home.appendingPathComponent(".claude/codebuddy/sessions")
@@ -23,7 +24,7 @@ let art: [String: NSImage] = Dictionary(uniqueKeysWithValues:
     })
 
 struct Snippet: Decodable { let label: String; let text: String }
-struct Step: Decodable { let text: String; let why: String; let snippets: [Snippet]? }
+struct Step: Decodable { let id: String?; let text: String; let why: String; let snippets: [Snippet]? }
 struct BuddySession: Decodable {
     let id: String, cwd: String, project: String, branch: String
     let status: String, mood: String, steps: [Step], updatedAt: Double
@@ -82,6 +83,79 @@ func isClaudeRunning() -> Bool {
     return p.terminationStatus == 0
 }
 
+/// Talking-face frames (calm pose, mouth half / fully open), swapped by loudness while Lavi speaks.
+let talkFrames: [NSImage] = ["talk_a", "talk_b"].compactMap { n in
+    Bundle.main.url(forResource: n, withExtension: "png").flatMap(NSImage.init(contentsOf:))
+}
+
+// MARK: - Voice
+
+/// Plays Lavi's pre-recorded lines (Contents/Resources/voice-<id>[-n].mp3, made with ElevenLabs).
+/// Quiet when muted, in quiet hours (except when you click), or within 20 s of the last line.
+final class Voice: NSObject, AVAudioPlayerDelegate {
+    private var player: AVAudioPlayer?
+    private var lastSpoke = Date.distantPast
+    let minGap: TimeInterval = 20
+    var onFinish: (() -> Void)?
+
+    var isOn: Bool {
+        get { UserDefaults.standard.object(forKey: "voiceOn") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "voiceOn") }
+    }
+    var volume: Float {
+        get { UserDefaults.standard.object(forKey: "voiceVolume") as? Float ?? 0.6 }
+        set { UserDefaults.standard.set(newValue, forKey: "voiceVolume"); player?.volume = newValue }
+    }
+    var quietHoursOn: Bool {
+        get { UserDefaults.standard.object(forKey: "quietHours") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "quietHours") }
+    }
+    let quietFrom = 22, quietUntil = 8 // ponytail: fixed 10pm–8am; make it a setting if it ever needs to move
+    var isQuietHour: Bool {
+        let h = Calendar.current.component(.hour, from: Date())
+        return quietHoursOn && (h >= quietFrom || h < quietUntil)
+    }
+    var isSpeaking: Bool { player?.isPlaying ?? false }
+
+    /// All recordings for a line id: "voice-greeting-1.mp3", "voice-greeting-2.mp3" … or just "voice-push.mp3".
+    private func files(for id: String) -> [URL] {
+        let dir = Bundle.main.resourceURL!
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter { $0 == "voice-\(id).mp3" || ($0.hasPrefix("voice-\(id)-") && $0.hasSuffix(".mp3")) }
+            .map { dir.appendingPathComponent($0) }
+    }
+
+    /// Says a line. `byYou` (a click) skips quiet hours and the spacing rule, never mute.
+    @discardableResult
+    func say(_ id: String, byYou: Bool = false) -> TimeInterval? {
+        guard isOn else { return nil }
+        if !byYou && (isQuietHour || Date().timeIntervalSince(lastSpoke) < minGap) { return nil }
+        guard let url = files(for: id).randomElement(), let p = try? AVAudioPlayer(contentsOf: url) else { return nil }
+        player?.stop()
+        p.volume = volume
+        p.isMeteringEnabled = true
+        p.delegate = self
+        p.play()
+        player = p
+        lastSpoke = Date()
+        return p.duration
+    }
+
+    /// Loudness 0…1 of what's playing right now, for the mouth.
+    func level() -> Float {
+        guard let p = player, p.isPlaying else { return 0 }
+        p.updateMeters()
+        return max(0, min(1, (p.averagePower(forChannel: 0) + 40) / 40))
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { onFinish?() }
+}
+
+/// Seconds since you last touched the mouse or keyboard: "are you at the Mac?"
+func secondsSinceInput() -> Double {
+    CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+}
+
 // MARK: - Character
 
 final class BuddyView: NSView {
@@ -89,6 +163,7 @@ final class BuddyView: NSView {
     var phase: CGFloat = 0
     var isBlinking = false
     var idleFrame: Int? // set while the idle animation plays
+    var mouth: Int? // 0 closed, 1 half, 2 open: set while Lavi speaks
     var onClick: ((NSEvent) -> Void)?
     var onHover: ((Bool) -> Void)?
     private var dragStart: NSPoint?
@@ -130,7 +205,9 @@ final class BuddyView: NSView {
         // Blink only has a matching frame for the calm pose.
         let frame = (isBlinking && (mood == "calm")) ? "blink" : mood
         let idle = mood == "calm" ? idleFrame.map { idleFrames[$0 % idleFrames.count] } : nil
-        if let img = idle ?? art[frame] ?? art["calm"] {
+        // While talking: the calm pose with its mouth moving to the audio.
+        let talking: NSImage? = mouth.flatMap { m in m == 0 ? art["calm"] : talkFrames.isEmpty ? nil : talkFrames[min(m, talkFrames.count) - 1] }
+        if let img = talking ?? idle ?? art[frame] ?? art["calm"] {
             NSColor.black.withAlphaComponent(0.16).setFill()
             NSBezierPath(ovalIn: NSRect(x: bounds.width * 0.28, y: 2, width: bounds.width * 0.44, height: bounds.height * 0.06)).fill()
             img.draw(in: bounds.insetBy(dx: 2, dy: 2).offsetBy(dx: 0, dy: bob + 2), from: .zero, operation: .sourceOver, fraction: 1)
@@ -207,6 +284,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var sessions: [BuddySession] = []
     var hiddenUntil = Date.distantPast
     var lastMood = ""
+    let voice = Voice()
+    var seen: [String: (status: String, top: String, busySince: Date?)] = [:]
+    var isFirstTick = true
+    var lastGreeting = Date.distantPast
+    var holdVisibleUntil = Date.distantPast
 
     func applicationDidFinishLaunching(_ n: Notification) {
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
@@ -225,20 +307,28 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else { self.bubble.orderOut(nil) }
         }
         tick()
-        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.tick() }
-        Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.animate() }
-        Timer.scheduledTimer(withTimeInterval: 4.5, repeats: true) { [weak self] _ in self?.blink() }
+        // .common so the animation and mouth keep moving while a menu is open.
+        for (interval, f) in [(2.0, { [weak self] in self?.tick() }), (1.0 / 30, { [weak self] in self?.animate() }), (4.5, { [weak self] in self?.blink() })] as [(Double, () -> Void)] {
+            RunLoop.main.add(Timer(timeInterval: interval, repeats: true) { _ in f() }, forMode: .common)
+        }
+        voice.onFinish = { [weak self] in self?.view.mouth = nil; self?.view.needsDisplay = true }
+        // Goodbye: macOS can't delay another app's quit, so Lavi says it as Claude closes and lingers for the clip.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self, (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier == claudeBundleID,
+                  self.panel.isVisible, let secs = self.voice.say("goodbye") else { return }
+            self.holdVisibleUntil = Date().addingTimeInterval(secs + 0.5)
+        }
     }
 
     func tick() {
-        let visible = Date() > hiddenUntil && isClaudeRunning()
+        let visible = Date() < holdVisibleUntil || (Date() > hiddenUntil && isClaudeRunning())
         if visible != panel.isVisible { visible ? panel.orderFrontRegardless() : panel.orderOut(nil) }
         if !visible { bubble.orderOut(nil) }
         sessions = loadBuddySessions()
         let s = sessions.first
         let idleFor = Date().timeIntervalSince1970 * 1000 - (s?.updatedAt ?? 0)
         view.mood = s == nil || (s!.status == "idle" && idleFor > sleepyAfter) ? "sleepy" : s!.mood
-        view.setAccessibilityLabel(s.map { "Code buddy, \($0.project): \($0.steps.first?.text ?? "idle")" } ?? "Code buddy, dozing. No active session.")
+        view.setAccessibilityLabel(s.map { "Lavi, \($0.project): \($0.steps.first?.text ?? "idle")" } ?? "Lavi, dozing. No active session.")
         // Speak up briefly when the advice changes.
         let key = "\(s?.id ?? "")|\(s?.steps.first?.text ?? "")"
         if !lastMood.isEmpty, key != lastMood, let s, s.status == "idle", let step = s.steps.first, panel.isVisible {
@@ -246,9 +336,38 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.bubble.orderOut(nil) }
         }
         lastMood = key
+        if panel.isVisible { speakIfSomethingChanged() }
+        isFirstTick = false
+    }
+
+    /// Greeting, "done" and advice lines, decided from how the session files changed since the last tick.
+    func speakIfSomethingChanged() {
+        let now = Date()
+        for s in sessions {
+            let top = s.steps.first?.id ?? ""
+            let before = seen[s.id]
+            var busySince = before?.busySince
+            if s.status == "busy" && busySince == nil { busySince = now }
+            defer { seen[s.id] = (s.status, top, s.status == "busy" ? busySince : nil) }
+            if isFirstTick { continue } // don't chatter about sessions that were already open
+
+            if before == nil {
+                if now.timeIntervalSince(lastGreeting) > 600 { lastGreeting = now; voice.say("greeting") }
+            } else if before!.status == "busy" && s.status == "idle",
+                      let start = before!.busySince, now.timeIntervalSince(start) >= 180, secondsSinceInput() < 120 {
+                voice.say("done") // a long task finished while you're here
+            } else if s.status == "idle" && top != before!.top && !top.isEmpty && s.id == sessions.first?.id {
+                voice.say("advice-\(top)")
+            }
+        }
     }
 
     func animate() {
+        if voice.isSpeaking {
+            let l = voice.level()
+            let m = l < 0.35 ? 0 : l < 0.6 ? 1 : 2
+            if view.mouth != m { view.mouth = m; view.needsDisplay = true }
+        }
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard panel.isVisible, !reduce else { if view.phase != 0 || view.idleFrame != nil { view.phase = 0; view.idleFrame = nil; view.needsDisplay = true }; return }
         view.phase += view.mood == "busy" ? 0.25 : 0.06
@@ -275,6 +394,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func showMenu(_ e: NSEvent) {
         bubble.orderOut(nil)
+        if let top = sessions.first?.steps.first?.id, sessions.first?.status == "idle", view.mood != "sleepy" {
+            voice.say(top == "next" ? "allgood" : "advice-\(top)", byYou: true)
+        } else {
+            voice.say("allgood", byYou: true)
+        }
         let menu = NSMenu()
         if let s = sessions.first {
             menu.addItem(header("\(s.project) · \(s.branch.isEmpty ? "no git" : s.branch)"))
@@ -324,7 +448,16 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sizeItem.submenu = sizeMenu
         menu.addItem(sizeItem)
         menu.addItem(action("Hide for 1 hour", #selector(hideHour), nil))
-        menu.addItem(action("Quit CodeBuddy", #selector(NSApplication.terminate(_:)), nil))
+        let voiceItem = NSMenuItem(title: "Voice", action: nil, keyEquivalent: "")
+        let vm = NSMenu()
+        let onItem = action("Lavi talks", #selector(toggleVoice), nil); onItem.state = voice.isOn ? .on : .off; vm.addItem(onItem)
+        for (name, v) in [("Volume: low", Float(0.3)), ("Volume: medium", 0.6), ("Volume: high", 1.0)] as [(String, Float)] {
+            let it = action(name, #selector(setVolume(_:)), v); it.state = abs(voice.volume - v) < 0.01 ? .on : .off; vm.addItem(it)
+        }
+        let qh = action("Quiet 10pm–8am", #selector(toggleQuietHours), nil); qh.state = voice.quietHoursOn ? .on : .off; vm.addItem(qh)
+        voiceItem.submenu = vm
+        menu.addItem(voiceItem)
+        menu.addItem(action("Quit Lavi", #selector(NSApplication.terminate(_:)), nil))
         menu.popUp(positioning: nil, at: e.locationInWindow, in: view)
     }
 
@@ -375,6 +508,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         bubble.show("copied! paste it into Claude (⌘V), tweak it, then hit enter.", near: panel.frame)
+        voice.say("copied", byYou: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.bubble.orderOut(nil) }
     }
 
@@ -382,6 +516,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let cmd = resumeCommand(sender) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(cmd, forType: .string)
+    }
+
+    @objc func toggleVoice() { voice.isOn.toggle() }
+    @objc func toggleQuietHours() { voice.quietHoursOn.toggle() }
+    @objc func setVolume(_ sender: NSMenuItem) {
+        if let v = sender.representedObject as? Float { voice.volume = v; voice.say("allgood", byYou: true) }
     }
 
     @objc func setSize(_ sender: NSMenuItem) {

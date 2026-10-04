@@ -1,0 +1,19 @@
+{
+  "greeting-1": "hey, lavi here. what are we building today?",
+  "greeting-2": "oh hey! good to see you. let's get into it.",
+  "greeting-3": "welcome back. I'm right here if you need me.",
+  "goodbye-1": "nice session. go rest, I'll be here.",
+  "goodbye-2": "good work today. see you next time.",
+  "goodbye-3": "alright, logging off. catch you later.",
+  "advice-fix-tests": "tests are failing. let's fix those first.",
+  "advice-run-tests": "you've changed some code. quick test run?",
+  "advice-branch": "you're working right on your main branch. let's spin up a branch first.",
+  "advice-commit": "good time to save a checkpoint. let's commit what you've got.",
+  "advice-wrap": "my memory's getting full. let's write a quick handoff and start fresh.",
+  "advice-push": "you've got commits that only live on this Mac. let's push them up.",
+  "done-1": "done with that big one. come take a look.",
+  "done-2": "all wrapped up over here. want to check it out?",
+  "allgood-1": "all good. you're in a nice spot.",
+  "allgood-2": "nothing urgent. you're doing great.",
+  "copied": "copied. paste it in and hit enter."
+}

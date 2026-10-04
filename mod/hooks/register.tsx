@@ -8,7 +8,7 @@ import { advise, isCodeFile, isTestCommand, parseAnswer, parseGitStatus } from '
 const PANE = 'codebuddy'
 // The voice is casual; the thinking is not. Keep both halves of this prompt.
 const ASK = [
-  "You're my coding buddy, looking over my shoulder at this session. Talk to me like a chill friend who happens to be a great senior engineer:",
+  "You're Lavi, my coding buddy (a little lavender robot with headphones), looking over my shoulder at this session. Talk to me like a chill friend who happens to be a great senior engineer:",
   'plain words, short sentences, lowercase is fine, at most one emoji. If you need a technical term, explain it in a few words.',
   "Don't dumb down the thinking. Tell me the single best next step, why it's the best move right now, and any risk I should watch for.",
   'Be concrete: name the actual files, commands or numbers. At most 3 short bullets, no filler, no pep talk.',
@@ -74,7 +74,7 @@ const refresh = async ($: EngineInterface) => {
   await update($, advice, () => a)
   // A closed band comes back once the advice moves on.
   await update($, bandHiddenFor, h => (h === a.steps[0]!.id ? h : null))
-  $.ui.status(`🤖 ${a.steps[0]!.text}`)
+  $.ui.status(`🤖 lavi: ${a.steps[0]!.text}`)
   await writeFile($, 'idle')
   return a
 }
@@ -98,7 +98,7 @@ const useSnippet = async ($: EngineInterface, text: string, surface: RenderSurfa
   const filled = await $.prompt.fill({ text: box.text.trim() ? `\n${text}` : text, mode: 'append' })
   if (filled.isFilled) return $.ui.toast("it's in your message box. tweak it or hit enter.")
   const copied = await $.ui.copy({ text, surface })
-  $.ui.toast(copied.isCopied ? 'copied. paste it into the message box.' : "couldn't drop that in. try the pane on your computer.")
+  $.ui.toast(copied.isCopied ? 'copied. paste it into the message box.' : "couldn't drop that in. try lavi's pane on your computer.")
 }
 
 const pingsOn = async ($: EngineInterface) => (await $.store.get('pingsOn')) !== false
@@ -111,46 +111,51 @@ const pingsOn = async ($: EngineInterface) => (await $.store.get('pingsOn')) !==
 const push = async ($: EngineInterface, message: string, force = false) => {
   const now = Date.now()
   if (!force && !canPush(await read($, pings), now, await pingsOn($))) return 'held back (spam guard or pings off)'
-  const r = await $.tool.call({ tool: 'PushNotification', message, status: 'proactive' })
+  const r = await $.tool.call({ tool: 'PushNotification', message: `lavi: ${message}`, status: 'proactive' })
   const said = r.deny ? `refused: ${r.deny}` : (r.text ?? 'sent')
   $.ui.log(`codebuddy ping: ${said}`, { to: 'debug' })
   if (!r.deny && !r.isError) await update($, pings, p => ({ ...p, lastPushAt: now }))
   return said
 }
 
+/** /lavi (and the old /buddy): the pane, `next` for advice, `pings on|off|test`. */
+async function onCommand($: EngineInterface, e: { args: string }) {
+  const [cmd, arg] = e.args.trim().split(/\s+/)
+  if (cmd === 'next') {
+    const a = await ask($)
+    if (a.snippets.length) await $.ui.open({ id: PANE, title: 'Lavi' })
+    const list = a.snippets.map((sn, i) => `${i + 1}. ${sn.label}: ${sn.text}`).join('\n')
+    return { text: list ? `${a.text}\n\nready-to-send prompts (pick one in lavi's pane):\n${list}` : a.text }
+  }
+  if (cmd === 'pings' && (arg === 'on' || arg === 'off')) {
+    await $.store.set('pingsOn', arg === 'on')
+    return { text: arg === 'on' ? "pings are on. I'll buzz you when something's worth coming back for." : "pings off. I'll keep quiet." }
+  }
+  if (cmd === 'pings' && arg === 'test') {
+    return { text: `test ping: ${await push($, `hey, it's me from ${await project($)}. pings work 👋`, true)}` }
+  }
+  if (cmd === 'pings') return { text: `pings are ${(await pingsOn($)) ? 'on' : 'off'}. use /lavi pings on, off or test.` }
+  await refresh($)
+  await $.ui.open({ id: PANE, title: 'Lavi' })
+  return { text: "lavi's pane is open." }
+}
+
 export const register: Register = on => {
   let nudge: { cancel: () => void } | undefined // ponytail: lost on hot reload; the next turn re-arms it
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'buddy',
-      description: 'Coding buddy. `/buddy` opens the pane, `/buddy next` asks for advice, `/buddy pings on|off|test`.',
-    })
+    for (const name of ['lavi', 'buddy'])
+      await $.command.register({
+        name,
+        description: 'Lavi, your coding buddy. Opens the pane; `next` asks for advice; `pings on|off|test`.',
+      })
     const started = await next(e)
     await refresh($)
     return started
   })
 
-  on('command.run', { command: 'buddy' }, async ($, e) => {
-    const [cmd, arg] = e.args.trim().split(/\s+/)
-    if (cmd === 'next') {
-      const a = await ask($)
-      if (a.snippets.length) await $.ui.open({ id: PANE, title: 'Buddy' })
-      const list = a.snippets.map((sn, i) => `${i + 1}. ${sn.label}: ${sn.text}`).join('\n')
-      return { text: list ? `${a.text}\n\nready-to-send prompts (pick one in the buddy pane):\n${list}` : a.text }
-    }
-    if (cmd === 'pings' && (arg === 'on' || arg === 'off')) {
-      await $.store.set('pingsOn', arg === 'on')
-      return { text: arg === 'on' ? "pings are on. I'll buzz you when something's worth coming back for." : "pings off. I'll keep quiet." }
-    }
-    if (cmd === 'pings' && arg === 'test') {
-      return { text: `test ping: ${await push($, `hey, it's your buddy from ${await project($)}. pings work 👋`, true)}` }
-    }
-    if (cmd === 'pings') return { text: `pings are ${(await pingsOn($)) ? 'on' : 'off'}. use /buddy pings on, off or test.` }
-    await refresh($)
-    await $.ui.open({ id: PANE, title: 'Buddy' })
-    return { text: 'buddy pane is open.' }
-  })
+  on('command.run', { command: 'lavi' }, onCommand)
+  on('command.run', { command: 'buddy' }, onCommand)
 
   on('prompt.submit', async ($, e, next) => {
     nudge?.cancel()
@@ -242,7 +247,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box gap={1} flexWrap="wrap">
-          <Text>🤖 {top.text}</Text>
+          <Text>🤖 lavi: {top.text}</Text>
           {top.snippets.map((sn, i) => (
             <Button key={`band-${i}`} hotkey={String(i + 1)} label={sn.label} onPress={() => void useSnippet($, sn.text, e.surface)} />
           ))}
@@ -276,7 +281,7 @@ export const register: Register = on => {
           tests {s.lastTest ?? 'not run yet'} · memory {s.contextPercent}% full
         </Text>
         <Box gap={1}>
-          <Button key="ask" variant="primary" label={busy ? 'thinking…' : 'Ask buddy'} onPress={() => void ask($)} />
+          <Button key="ask" variant="primary" label={busy ? 'thinking…' : 'Ask Lavi'} onPress={() => void ask($)} />
           <Button key="refresh" label="Refresh" onPress={() => void refresh($)} />
         </Box>
         {said && <Markdown key="answer" text={said.text} />}

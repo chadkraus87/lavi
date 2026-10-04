@@ -1,5 +1,11 @@
 # CodeBuddy v3: Lavi gets a name and a voice
 
+> **Status 2026-10-04: built.**
+> - Voice: preview 1, saved as "Lavi" (`HCx2PwbeGgmrPl8yw3w0`). 17 lines recorded with `eleven_v3`, about 750 ElevenLabs credits, roughly $0.14.
+> - Talking face: 2 Higgsfield frames, 1 credit.
+> - Focus-mode detection is not done: there's no public API for it, so mute and quiet hours cover it.
+> - Verified on screen: the greeting played with the mouth moving, then went back to the idle loop.
+
 Decided 2026-10-04:
 - **Name:** Lavi
 - **Voice:** ElevenLabs, pre-recorded lines, in a chill-friend style
