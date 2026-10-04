@@ -1,0 +1,1 @@
+{ "name": "codebuddy", "version": "0.1.0", "description": "Coding buddy: deterministic next-step advice per session, a /buddy pane, and state for the desktop character", "types": "./types/index.d.ts" }
