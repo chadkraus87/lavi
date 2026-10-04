@@ -49,6 +49,21 @@ It talks like a chill friend: plain words, the real file, command or number, and
 
 **Ask buddy** (`/buddy next`) uses the same voice. Its prompt in `register.tsx` still requires the single best next step, the reasoning, the risk, and specific files and commands.
 
+## Ready-to-send prompts
+
+Each piece of advice comes with 2–3 prompts you can send Claude straight away. Some examples:
+- "run the tests and fix anything that fails"
+- "commit what we have with a clear message that says what changed and why"
+- "write a short handoff…"
+
+**Ask buddy** also suggests prompts tailored to the session.
+
+- **In the session:** a band above the message box shows the top advice and its prompts as buttons. Click one, or after ctrl+x tab press 1–3. The prompt **drops into your message box as a draft, and nothing is sent until you press Enter**, so you can edit it first. If you've already typed something, the prompt goes on a new line after it. × hides the band until the advice changes. The `/buddy` pane has buttons for every step and for Ask buddy's prompts.
+- **Where a message box can't be filled** (the phone, or while a dialog is open), the prompt is copied to the clipboard instead.
+- **Desktop robot:** each step in its menu has a submenu of prompts. Clicking one copies it, so you paste it into Claude with ⌘V.
+
+The prompts live next to each rule in `mod/hooks/rules.ts`.
+
 ## Phone pings
 
 The mod calls Claude Code's own `PushNotification` tool. That shows a desktop banner, and pushes to your phone when the session is connected to Remote Control (on by default now). The tool **skips the ping when you're at the computer**.

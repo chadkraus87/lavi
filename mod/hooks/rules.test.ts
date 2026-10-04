@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Signals } from '../types'
-import { advise, isCodeFile, isTestCommand, parseGitStatus } from './rules'
+import { advise, isCodeFile, isTestCommand, parseAnswer, parseGitStatus } from './rules'
 
 const NOW = 1_800_000_000_000
 const base: Signals = {
@@ -51,4 +51,25 @@ test('casual voice still carries the real numbers', () => {
   expect(c.why).toBe('12 files changed and no commit in 50 min. a commit is your undo button.')
   expect(advise({ ...base, editsSinceTest: 1 }, NOW).steps[0]!.why).toContain('1 code edit since')
   expect(advise({ ...base, contextPercent: 72 }, NOW).steps[0]!.text).toContain('72%')
+})
+
+test('every piece of advice comes with ready-to-send prompts', () => {
+  for (const s of [{ lastTest: 'fail' as const }, { editsSinceTest: 2 }, { dirtyFiles: 1, branch: 'main' }, { dirtyFiles: 20 }, { contextPercent: 90 }, { ahead: 1 }, {}]) {
+    for (const step of advise({ ...base, ...s }, NOW).steps) {
+      expect(step.snippets.length).toBeGreaterThan(0)
+      for (const sn of step.snippets) expect(sn.label.length).toBeLessThanOrEqual(20)
+    }
+  }
+  expect(advise({ ...base, dirtyFiles: 1, branch: 'main' }, NOW).steps[0]!.snippets[0]!.text).toContain('keep main clean')
+})
+
+test('Ask buddy replies split into advice and prompt buttons', () => {
+  const a = parseAnswer('- run the tests\n- they cover auth.ts\n\nPROMPT: run auth tests | run the tests for auth.ts and fix failures\n- PROMPT: `explain | why is auth.ts flaky?`\nPROMPT: just the text here please')
+  expect(a.text).toBe('- run the tests\n- they cover auth.ts')
+  expect(a.snippets).toEqual([
+    { label: 'run auth tests', text: 'run the tests for auth.ts and fix failures' },
+    { label: 'explain', text: 'why is auth.ts flaky?' },
+    { label: 'just the text', text: 'just the text here please' },
+  ])
+  expect(parseAnswer('no prompts here').snippets).toEqual([])
 })

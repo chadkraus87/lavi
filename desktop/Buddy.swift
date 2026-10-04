@@ -9,6 +9,11 @@ let projectsDir = home.appendingPathComponent(".claude/projects")
 let claudeBundleID = "com.anthropic.claudefordesktop"
 let sizes: [(String, CGFloat)] = [("Small", 84), ("Medium", 110), ("Large", 140)]
 var size: CGFloat { let v = UserDefaults.standard.double(forKey: "size"); return v > 0 ? v : 110 }
+/// Idle animation frames (idle_00.png …) bundled beside the moods; played in the calm mood.
+let idleFrames: [NSImage] = ((try? FileManager.default.contentsOfDirectory(atPath: Bundle.main.resourcePath ?? "")) ?? [])
+    .filter { $0.hasPrefix("idle_") && $0.hasSuffix(".png") }.sorted()
+    .compactMap { NSImage(contentsOfFile: (Bundle.main.resourcePath ?? "") + "/" + $0) }
+let idleFPS = 12.0
 let sleepyAfter: Double = 30 * 60 * 1000 // ms with no activity before the robot dozes off
 
 /// Mood art bundled in Contents/Resources (built from desktop/art). Missing art falls back to the drawn blob.
@@ -17,7 +22,8 @@ let art: [String: NSImage] = Dictionary(uniqueKeysWithValues:
         Bundle.main.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:)).map { (name, $0) }
     })
 
-struct Step: Decodable { let text: String; let why: String }
+struct Snippet: Decodable { let label: String; let text: String }
+struct Step: Decodable { let text: String; let why: String; let snippets: [Snippet]? }
 struct BuddySession: Decodable {
     let id: String, cwd: String, project: String, branch: String
     let status: String, mood: String, steps: [Step], updatedAt: Double
@@ -82,6 +88,7 @@ final class BuddyView: NSView {
     var mood = "calm" { didSet { needsDisplay = true } }
     var phase: CGFloat = 0
     var isBlinking = false
+    var idleFrame: Int? // set while the idle animation plays
     var onClick: ((NSEvent) -> Void)?
     var onHover: ((Bool) -> Void)?
     private var dragStart: NSPoint?
@@ -122,7 +129,8 @@ final class BuddyView: NSView {
         let bob = sin(phase) * 3
         // Blink only has a matching frame for the calm pose.
         let frame = (isBlinking && (mood == "calm")) ? "blink" : mood
-        if let img = art[frame] ?? art["calm"] {
+        let idle = mood == "calm" ? idleFrame.map { idleFrames[$0 % idleFrames.count] } : nil
+        if let img = idle ?? art[frame] ?? art["calm"] {
             NSColor.black.withAlphaComponent(0.16).setFill()
             NSBezierPath(ovalIn: NSRect(x: bounds.width * 0.28, y: 2, width: bounds.width * 0.44, height: bounds.height * 0.06)).fill()
             img.draw(in: bounds.insetBy(dx: 2, dy: 2).offsetBy(dx: 0, dy: bob + 2), from: .zero, operation: .sourceOver, fraction: 1)
@@ -242,12 +250,20 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func animate() {
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        guard panel.isVisible, !reduce else { if view.phase != 0 { view.phase = 0; view.needsDisplay = true }; return }
+        guard panel.isVisible, !reduce else { if view.phase != 0 || view.idleFrame != nil { view.phase = 0; view.idleFrame = nil; view.needsDisplay = true }; return }
         view.phase += view.mood == "busy" ? 0.25 : 0.06
+        // The idle clip has its own motion (and blink), so it replaces the bob in the calm mood.
+        if view.mood == "calm" && !idleFrames.isEmpty {
+            view.phase = 0
+            view.idleFrame = Int(Date().timeIntervalSince1970 * idleFPS) % idleFrames.count
+        } else {
+            view.idleFrame = nil
+        }
         view.needsDisplay = true
     }
 
     func blink() {
+        if view.idleFrame != nil { return } // the idle clip blinks on its own
         view.isBlinking = true; view.needsDisplay = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.view.isBlinking = false; self?.view.needsDisplay = true }
     }
@@ -262,6 +278,17 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             for (i, step) in s.steps.enumerated() {
                 let item = NSMenuItem(title: "\(i + 1). \(step.text)", action: nil, keyEquivalent: "")
                 item.toolTip = step.why
+                // Ready-to-send prompts: copied, so you paste them into the session and press Enter yourself.
+                if let snippets = step.snippets, !snippets.isEmpty {
+                    let sub = NSMenu()
+                    sub.addItem(header("copy a prompt, then paste it in Claude"))
+                    for sn in snippets {
+                        let it = action(sn.label, #selector(copySnippet(_:)), sn.text)
+                        it.toolTip = sn.text
+                        sub.addItem(it)
+                    }
+                    item.submenu = sub
+                }
                 menu.addItem(item)
             }
         } else {
@@ -338,6 +365,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let script = "tell application \"Terminal\" to do script \"\(escaped)\"\ntell application \"Terminal\" to activate"
         var err: NSDictionary?
         NSAppleScript(source: script)?.executeAndReturnError(&err)
+    }
+
+    @objc func copySnippet(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        bubble.show("copied! paste it into Claude (⌘V), tweak it, then hit enter.", near: panel.frame)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.bubble.orderOut(nil) }
     }
 
     @objc func copyResume(_ sender: NSMenuItem) {

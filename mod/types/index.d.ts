@@ -1,5 +1,9 @@
 export type Mood = 'worried' | 'nudge' | 'calm' | 'happy' | 'busy'
-export type Step = { id: string; text: string; why: string; mood: Mood }
+/** A ready-to-send prompt the buddy offers; picking one drops it in the message box (you still press Enter). */
+export type Snippet = { label: string; text: string }
+export type Step = { id: string; text: string; why: string; mood: Mood; snippets: Snippet[] }
+/** The model's take from Ask buddy: the answer, plus the prompts it suggests. */
+export type Answer = { text: string; snippets: Snippet[] }
 export type Advice = { mood: Mood; steps: Step[] }
 
 export type Signals = {
@@ -39,9 +43,11 @@ declare module 'claude-code' {
     codebuddy: {
       signals: Signals
       advice: Advice | null
-      answer: string | null
+      answer: Answer | null
       isAsking: boolean
       pings: Pings
+      /** id of the advice whose band you closed; it comes back when the advice changes */
+      bandHiddenFor: string | null
     }
   }
 }

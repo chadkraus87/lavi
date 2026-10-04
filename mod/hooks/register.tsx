@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
-import type { Advice, Pings, SessionFile, Signals } from '../types'
+import type { Advice, Answer, Pings, SessionFile, Signals } from '../types'
 import { approvalPing, canPush, NO_PINGS, NUDGE_AFTER_MS, nudgePing, questionPing, turnPing } from './pings'
-import { advise, isCodeFile, isTestCommand, parseGitStatus } from './rules'
+import { advise, isCodeFile, isTestCommand, parseAnswer, parseGitStatus } from './rules'
 
 const PANE = 'codebuddy'
 // The voice is casual; the thinking is not. Keep both halves of this prompt.
@@ -12,6 +12,7 @@ const ASK = [
   'plain words, short sentences, lowercase is fine, at most one emoji. If you need a technical term, explain it in a few words.',
   "Don't dumb down the thinking. Tell me the single best next step, why it's the best move right now, and any risk I should watch for.",
   'Be concrete: name the actual files, commands or numbers. At most 3 short bullets, no filler, no pep talk.',
+  'Then add 2-3 ready-to-send prompts I could paste to you to act on it, one per line, exactly as `PROMPT: <2-4 word label> | <the full prompt, written as me talking to you>`.',
 ].join(' ')
 
 const signals = atom({ plugin: 'codebuddy', key: 'signals' } as const, {
@@ -19,7 +20,8 @@ const signals = atom({ plugin: 'codebuddy', key: 'signals' } as const, {
   lastCommitAt: null, lastTest: null, editsSinceTest: 0, contextPercent: 0,
 } as Signals)
 const advice = atom({ plugin: 'codebuddy', key: 'advice' } as const, null as Advice | null)
-const answer = atom({ plugin: 'codebuddy', key: 'answer' } as const, null as string | null)
+const answer = atom({ plugin: 'codebuddy', key: 'answer' } as const, null as Answer | null)
+const bandHiddenFor = atom({ plugin: 'codebuddy', key: 'bandHiddenFor' } as const, null as string | null)
 const isAsking = atom({ plugin: 'codebuddy', key: 'isAsking' } as const, false)
 const pings = atom({ plugin: 'codebuddy', key: 'pings' } as const, NO_PINGS as Pings)
 
@@ -39,8 +41,9 @@ const project = async ($: EngineInterface) => {
 
 // Mirrors this session into ~/.claude/codebuddy/sessions/<id>.json for the desktop character.
 const writeFile = async ($: EngineInterface, status: SessionFile['status']) => {
-  const [home, id, cwd, a, s] = await Promise.all([$.env.get('HOME'), $.session.id(), $.session.cwd(), read($, advice), read($, signals)])
+  const home = await $.env.get('HOME')
   if (!home) return
+  const [id, cwd, a, s] = await Promise.all([$.session.id(), $.session.cwd(), read($, advice), read($, signals)])
   const file: SessionFile = {
     id, cwd, project: cwd.split('/').pop() ?? cwd, branch: s.branch, status,
     mood: status === 'busy' ? 'busy' : (a?.mood ?? 'calm'),
@@ -69,6 +72,8 @@ const refresh = async ($: EngineInterface) => {
   const a = advise(next)
   await update($, signals, () => next)
   await update($, advice, () => a)
+  // A closed band comes back once the advice moves on.
+  await update($, bandHiddenFor, h => (h === a.steps[0]!.id ? h : null))
   $.ui.status(`🤖 ${a.steps[0]!.text}`)
   await writeFile($, 'idle')
   return a
@@ -77,10 +82,23 @@ const refresh = async ($: EngineInterface) => {
 const ask = async ($: EngineInterface) => {
   await update($, isAsking, () => true)
   const r = await $.model.fork({ prompt: ASK })
-  const text = r.isAnswered ? r.text : `couldn't think that through right now (${r.reason}). try again in a sec?`
-  await update($, answer, () => text)
+  const a = r.isAnswered ? parseAnswer(r.text) : { text: `couldn't think that through right now (${r.reason}). try again in a sec?`, snippets: [] }
+  await update($, answer, () => a)
   await update($, isAsking, () => false)
-  return text
+  return a
+}
+
+/**
+ * Drops a snippet into the message box as a draft. Never sends it, and never wipes
+ * what you already typed (it goes on a new line after it). Where no box can take it
+ * (the phone, a dialog open), it lands on the clipboard instead.
+ */
+const useSnippet = async ($: EngineInterface, text: string, surface: RenderSurface) => {
+  const box = await $.prompt.read()
+  const filled = await $.prompt.fill({ text: box.text.trim() ? `\n${text}` : text, mode: 'append' })
+  if (filled.isFilled) return $.ui.toast("it's in your message box. tweak it or hit enter.")
+  const copied = await $.ui.copy({ text, surface })
+  $.ui.toast(copied.isCopied ? 'copied. paste it into the message box.' : "couldn't drop that in. try the pane on your computer.")
 }
 
 const pingsOn = async ($: EngineInterface) => (await $.store.get('pingsOn')) !== false
@@ -115,7 +133,12 @@ export const register: Register = on => {
 
   on('command.run', { command: 'buddy' }, async ($, e) => {
     const [cmd, arg] = e.args.trim().split(/\s+/)
-    if (cmd === 'next') return { text: await ask($) }
+    if (cmd === 'next') {
+      const a = await ask($)
+      if (a.snippets.length) await $.ui.open({ id: PANE, title: 'Buddy' })
+      const list = a.snippets.map((sn, i) => `${i + 1}. ${sn.label}: ${sn.text}`).join('\n')
+      return { text: list ? `${a.text}\n\nready-to-send prompts (pick one in the buddy pane):\n${list}` : a.text }
+    }
     if (cmd === 'pings' && (arg === 'on' || arg === 'off')) {
       await $.store.set('pingsOn', arg === 'on')
       return { text: arg === 'on' ? "pings are on. I'll buzz you when something's worth coming back for." : "pings off. I'll keep quiet." }
@@ -207,6 +230,29 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The band above the message box: top advice + its snippets. Wraps whatever is
+  // drawn beneath (other plugins' bands) instead of replacing it.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const below = await next(e)
+    const [a, hidden] = await Promise.all([read($, advice), read($, bandHiddenFor)])
+    const top = a?.steps[0]
+    if (e.props.hasSurvey || !top || top.id === hidden || !top.snippets.length) return below
+
+    const { Box, Text, Button } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Box gap={1} flexWrap="wrap">
+          <Text>🤖 {top.text}</Text>
+          {top.snippets.map((sn, i) => (
+            <Button key={`band-${i}`} hotkey={String(i + 1)} label={sn.label} onPress={() => void useSnippet($, sn.text, e.surface)} />
+          ))}
+          <Button key="band-hide" role="dismiss" label="×" onPress={() => void update($, bandHiddenFor, () => top.id)} />
+        </Box>
+        {below}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const [a, s, said, busy] = await Promise.all([read($, advice), read($, signals), read($, answer), read($, isAsking)])
@@ -218,6 +264,11 @@ export const register: Register = on => {
           <Box flexDirection="column">
             <Text bold={i === 0}>{i + 1}. {step.text}</Text>
             <Text dimColor>   {step.why}</Text>
+            <Box gap={1} flexWrap="wrap">
+              {step.snippets.map((sn, j) => (
+                <Button key={`s-${step.id}-${j}`} label={sn.label} onPress={() => void useSnippet($, sn.text, e.surface)} />
+              ))}
+            </Box>
           </Box>
         ))}
         <Text dimColor>
@@ -228,7 +279,14 @@ export const register: Register = on => {
           <Button key="ask" variant="primary" label={busy ? 'thinking…' : 'Ask buddy'} onPress={() => void ask($)} />
           <Button key="refresh" label="Refresh" onPress={() => void refresh($)} />
         </Box>
-        {said && <Markdown key="answer" text={said} />}
+        {said && <Markdown key="answer" text={said.text} />}
+        {said && said.snippets.length > 0 && (
+          <Box gap={1} flexWrap="wrap">
+            {said.snippets.map((sn, j) => (
+              <Button key={`a-${j}`} label={sn.label} onPress={() => void useSnippet($, sn.text, e.surface)} />
+            ))}
+          </Box>
+        )}
       </Box>
     )
   })
