@@ -1,5 +1,7 @@
 # CodeBuddy v2: look, voice, phone pings
 
+> **Status 2026-10-04:** built. 7.5 credits spent: 4 concepts, the hero, 7 moods. The transparent-background output made the paid background removal unnecessary. AutoSprite is **not run**, because Higgsfield's cost check errors for that model; it can be revisited with a known price. A push from the mod is confirmed to reach the tool, which held it back because the terminal was active. Delivery to the phone still needs a real away-from-desk check.
+
 Decided 2026-10-04:
 - **Look:** a little desk robot, in a 3D vinyl-toy style
   - Picked **concept 3, the lavender headphones cube** (`docs/concepts/concept-3.png`, Higgsfield job `07b3430e-ca0b-4d24-b03e-28296352d401`). The hero swaps its piano keyboard for a computer keyboard.

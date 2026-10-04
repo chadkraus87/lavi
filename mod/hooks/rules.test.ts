@@ -45,3 +45,10 @@ test('parses porcelain v2 status', () => {
   const out = '# branch.oid abc\n# branch.head feat/x\n# branch.upstream origin/feat/x\n# branch.ab +3 -0\n1 .M N... 100644 100644 100644 a b src/a.ts\n? new.ts\n'
   expect(parseGitStatus(out)).toEqual({ branch: 'feat/x', ahead: 3, dirty: 2 })
 })
+
+test('casual voice still carries the real numbers', () => {
+  const c = advise({ ...base, dirtyFiles: 12, lastCommitAt: NOW - 50 * 60000 }, NOW).steps[0]!
+  expect(c.why).toBe('12 files changed and no commit in 50 min. a commit is your undo button.')
+  expect(advise({ ...base, editsSinceTest: 1 }, NOW).steps[0]!.why).toContain('1 code edit since')
+  expect(advise({ ...base, contextPercent: 72 }, NOW).steps[0]!.text).toContain('72%')
+})

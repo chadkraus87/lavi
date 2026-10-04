@@ -22,32 +22,57 @@ export function parseGitStatus(out: string) {
   return { branch, ahead, dirty }
 }
 
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// Voice: a chill friend. Plain words, the real number/file/command, and the "why" in one breath.
 export function advise(s: Signals, now = Date.now()): Advice {
   const steps: Step[] = []
   const dirty = s.dirtyFiles > 0
   const minutesSinceCommit = s.lastCommitAt ? (now - s.lastCommitAt) / 60000 : Infinity
+  const sinceCommit = Number.isFinite(minutesSinceCommit) ? `${Math.round(minutesSinceCommit)} min` : 'ever (no commits yet)'
 
   if (s.lastTest === 'fail')
-    steps.push({ id: 'fix-tests', text: 'Fix the failing tests before moving on.', why: 'The last test run failed.', mood: 'worried' })
+    steps.push({
+      id: 'fix-tests', mood: 'worried',
+      text: "tests are failing. let's fix those before anything else.",
+      why: 'piling new changes on top of a broken test makes it way harder to tell what went wrong.',
+    })
   if (s.editsSinceTest > 0 && s.lastTest !== 'fail')
-    steps.push({ id: 'run-tests', text: 'Run the tests.', why: `${s.editsSinceTest} code edit(s) since the last test run.`, mood: 'nudge' })
+    steps.push({
+      id: 'run-tests', mood: 'nudge',
+      text: 'quick test run?',
+      why: `${plural(s.editsSinceTest, 'code edit')} since the last time tests ran. catching a break now is cheap; later it isn't.`,
+    })
   if (dirty && s.isGit && s.branch && s.branch === s.defaultBranch)
-    steps.push({ id: 'branch', text: 'Create a branch before going further.', why: `Uncommitted changes on ${s.branch}.`, mood: 'nudge' })
+    steps.push({
+      id: 'branch', mood: 'nudge',
+      text: `you're working straight on ${s.branch}. spin up a branch first.`,
+      why: `a branch is a safe sandbox: if this goes sideways, ${s.branch} stays clean.`,
+    })
   if (dirty && (s.dirtyFiles > MAX_DIRTY_FILES || minutesSinceCommit > MAX_MINUTES_SINCE_COMMIT))
     steps.push({
-      id: 'commit',
-      text: 'Commit a checkpoint.',
-      why: s.dirtyFiles > MAX_DIRTY_FILES
-        ? `${s.dirtyFiles} files changed.`
-        : `No commit in ${Number.isFinite(minutesSinceCommit) ? Math.round(minutesSinceCommit) + ' min' : 'this repo yet'}.`,
-      mood: 'nudge',
+      id: 'commit', mood: 'nudge',
+      text: "good time to save a checkpoint. commit what you've got.",
+      why: `${plural(s.dirtyFiles, 'file')} changed and no commit in ${sinceCommit}. a commit is your undo button.`,
     })
   if (s.contextPercent >= CONTEXT_WRAP_PERCENT)
-    steps.push({ id: 'wrap', text: 'Wrap up: write a handoff, then /compact or start fresh.', why: `Context is ${s.contextPercent}% full.`, mood: 'nudge' })
+    steps.push({
+      id: 'wrap', mood: 'nudge',
+      text: `my memory's getting full (${s.contextPercent}%). let's write a quick handoff and start fresh.`,
+      why: 'past this point I start forgetting earlier details. a handoff note keeps the important stuff, then /compact or a new session clears space.',
+    })
   if (s.ahead > 0)
-    steps.push({ id: 'push', text: 'Push your commits.', why: `${s.ahead} commit(s) ahead of upstream.`, mood: 'calm' })
+    steps.push({
+      id: 'push', mood: 'calm',
+      text: 'push your commits up.',
+      why: `${plural(s.ahead, 'commit')} only live on this Mac right now. pushing backs them up.`,
+    })
   if (steps.length === 0)
-    steps.push({ id: 'next', text: 'Good spot: pick the next task, or save progress to SecondBrain.', why: 'Tree clean and nothing failing.', mood: 'happy' })
+    steps.push({
+      id: 'next', mood: 'happy',
+      text: "nice, you're in a good spot. pick the next thing, or save progress to SecondBrain.",
+      why: 'everything is committed and nothing is failing.',
+    })
 
   return { mood: steps[0]!.mood, steps }
 }

@@ -2,9 +2,9 @@
 
 A coding buddy that suggests the next step in every Claude Code session. You see it in three places:
 
-- **In the session** (desktop app, CLI, and the phone via Remote Control): a `🐾 next step` entry on the status line, plus a `/buddy` pane.
-- **On your desktop**: a small floating character, shown whenever the Claude app or a `claude` process is running. Its face shows the session's state. Hover over it to see the advice. Click it for the full list of steps and every session.
-- **On your phone**: Claude Code's built-in Remote Control. Open any session in the Claude mobile app to message it. The buddy's status entry and pane draw there too.
+- **In the session** (desktop app, CLI, and the phone via Remote Control): a `🤖 next step` entry on the status line, plus a `/buddy` pane.
+- **On your desktop**: a small lavender robot with headphones, shown whenever the Claude app or a `claude` process is running. Its face shows the session's state. Hover over it to see the advice. Click it for the full list of steps and every session.
+- **On your phone**: Claude Code's built-in Remote Control. Open any session in the Claude mobile app to message it. The buddy's status entry and pane draw there too, and it **pings you** when something is worth coming back for (see below).
 
 ```
  Claude Code session ─ codebuddy mod ─► status line + /buddy pane (desktop & mobile)
@@ -43,23 +43,45 @@ The signals come from `git status`, `git log`, the session's context usage, and 
 
 For a model's opinion, run `/buddy next` or press **Ask buddy** in the pane. It forks the session, so the question reuses the cached context instead of re-sending it. This is the only part that costs tokens.
 
-## Faces
+## How it talks
 
-| Face | Mood |
-|------|------|
-| red frown | worried (failing tests) |
-| orange "o" | nudge (an action is suggested) |
-| teal flat | calm |
-| green smile | happy (good spot) |
-| purple, eyes up, bobbing | busy (a turn is running) |
+It talks like a chill friend: plain words, the real file, command or number, and the reason in a sentence. For example: *"good time to save a checkpoint. commit what you've got. 12 files changed and no commit in 50 min. a commit is your undo button."*
 
-When the system's Reduce Motion setting is on, the character doesn't move.
+**Ask buddy** (`/buddy next`) uses the same voice. Its prompt in `register.tsx` still requires the single best next step, the reasoning, the risk, and specific files and commands.
+
+## Phone pings
+
+The mod calls Claude Code's own `PushNotification` tool. That shows a desktop banner, and pushes to your phone when the session is connected to Remote Control (on by default now). The tool **skips the ping when you're at the computer**.
+
+| Ping | When |
+|---|---|
+| long task finished | a turn ran 3+ min (says what's next) |
+| something broke | tests failed during the turn, or it ended in an error |
+| waiting on you | Claude asked you a question, or needs your OK to run something |
+| gentle nudge | 30 min after a turn, there's still uncommitted work (once per session) |
+
+Pings are spaced at least 2 minutes apart per session. The wording and thresholds live in `mod/hooks/pings.ts`. Commands: `/buddy pings off`, `/buddy pings on`, `/buddy pings test`.
+
+## Moods
+
+The robot art is in `desktop/art/` (made with Higgsfield; how is in that folder's README). If the art is missing, the app draws a simple blob instead.
+
+| Mood | When |
+|---|---|
+| happy (thumbs up) | good spot |
+| nudge (hand up) | a step is suggested |
+| worried (red face) | tests failing |
+| calm (blinks now and then) | nothing urgent |
+| busy (`•••`, typing) | Claude is working |
+| sleepy (zZ) | no session, or idle 30+ min |
+
+It bobs gently, and faster while busy. When the system's Reduce Motion setting is on, it stays still. The size is in the menu: Small, Medium or Large.
 
 ## Desktop menu
 
 Click the character to see:
 - the focus session's steps
-- **Sessions waiting for you** (`claude://code/needs-input`)
+- **Sessions waiting on you** (`claude://code/needs-input`)
 - **New Claude Code session**
 - **Live** buddy sessions and the 15 most **Recent** transcripts. Each one can be:
   - **Opened in the Claude app** (`claude://resume?session=<id>`, which imports a CLI session into the app)

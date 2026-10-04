@@ -7,7 +7,15 @@ let home = FileManager.default.homeDirectoryForCurrentUser
 let buddyDir = home.appendingPathComponent(".claude/codebuddy/sessions")
 let projectsDir = home.appendingPathComponent(".claude/projects")
 let claudeBundleID = "com.anthropic.claudefordesktop"
-let size: CGFloat = 84
+let sizes: [(String, CGFloat)] = [("Small", 84), ("Medium", 110), ("Large", 140)]
+var size: CGFloat { let v = UserDefaults.standard.double(forKey: "size"); return v > 0 ? v : 110 }
+let sleepyAfter: Double = 30 * 60 * 1000 // ms with no activity before the robot dozes off
+
+/// Mood art bundled in Contents/Resources (built from desktop/art). Missing art falls back to the drawn blob.
+let art: [String: NSImage] = Dictionary(uniqueKeysWithValues:
+    ["happy", "nudge", "worried", "calm", "busy", "blink", "sleepy"].compactMap { name in
+        Bundle.main.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:)).map { (name, $0) }
+    })
 
 struct Step: Decodable { let text: String; let why: String }
 struct BuddySession: Decodable {
@@ -112,6 +120,14 @@ final class BuddyView: NSView {
 
     override func draw(_ dirty: NSRect) {
         let bob = sin(phase) * 3
+        // Blink only has a matching frame for the calm pose.
+        let frame = (isBlinking && (mood == "calm")) ? "blink" : mood
+        if let img = art[frame] ?? art["calm"] {
+            NSColor.black.withAlphaComponent(0.16).setFill()
+            NSBezierPath(ovalIn: NSRect(x: bounds.width * 0.28, y: 2, width: bounds.width * 0.44, height: bounds.height * 0.06)).fill()
+            img.draw(in: bounds.insetBy(dx: 2, dy: 2).offsetBy(dx: 0, dy: bob + 2), from: .zero, operation: .sourceOver, fraction: 1)
+            return
+        }
         let body = NSRect(x: 10, y: 8 + bob, width: bounds.width - 20, height: bounds.height - 22)
         // shadow
         NSColor.black.withAlphaComponent(0.18).setFill()
@@ -212,8 +228,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !visible { bubble.orderOut(nil) }
         sessions = loadBuddySessions()
         let s = sessions.first
-        view.mood = s?.mood ?? "calm"
-        view.setAccessibilityLabel(s.map { "Code buddy, \($0.project): \($0.steps.first?.text ?? "idle")" } ?? "Code buddy, no active session")
+        let idleFor = Date().timeIntervalSince1970 * 1000 - (s?.updatedAt ?? 0)
+        view.mood = s == nil || (s!.status == "idle" && idleFor > sleepyAfter) ? "sleepy" : s!.mood
+        view.setAccessibilityLabel(s.map { "Code buddy, \($0.project): \($0.steps.first?.text ?? "idle")" } ?? "Code buddy, dozing. No active session.")
         // Speak up briefly when the advice changes.
         let key = "\(s?.id ?? "")|\(s?.steps.first?.text ?? "")"
         if !lastMood.isEmpty, key != lastMood, let s, s.status == "idle", let step = s.steps.first, panel.isVisible {
@@ -248,10 +265,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(item)
             }
         } else {
-            menu.addItem(header("No active session"))
+            menu.addItem(header("nothing going on right now"))
         }
         menu.addItem(.separator())
-        menu.addItem(action("Sessions waiting for you", #selector(openURL(_:)), "claude://code/needs-input"))
+        menu.addItem(action("Sessions waiting on you", #selector(openURL(_:)), "claude://code/needs-input"))
         menu.addItem(action("New Claude Code session", #selector(openURL(_:)), "claude://code/new"))
         menu.addItem(.separator())
 
@@ -267,6 +284,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(sessionItem(id: t.id, cwd: t.cwd, title: "\(project) · \(t.title) · \(fmt.localizedString(for: t.modified, relativeTo: Date()))"))
         }
         menu.addItem(.separator())
+        let sizeItem = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
+        let sizeMenu = NSMenu()
+        for (name, pts) in sizes {
+            let item = action(name, #selector(setSize(_:)), pts)
+            item.state = pts == size ? .on : .off
+            sizeMenu.addItem(item)
+        }
+        sizeItem.submenu = sizeMenu
+        menu.addItem(sizeItem)
         menu.addItem(action("Hide for 1 hour", #selector(hideHour), nil))
         menu.addItem(action("Quit CodeBuddy", #selector(NSApplication.terminate(_:)), nil))
         menu.popUp(positioning: nil, at: e.locationInWindow, in: view)
@@ -318,6 +344,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let cmd = resumeCommand(sender) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(cmd, forType: .string)
+    }
+
+    @objc func setSize(_ sender: NSMenuItem) {
+        guard let pts = sender.representedObject as? CGFloat else { return }
+        UserDefaults.standard.set(Double(pts), forKey: "size")
+        let f = panel.frame
+        panel.setFrame(NSRect(x: f.maxX - pts, y: f.minY, width: pts, height: pts), display: true)
+        view.frame = NSRect(x: 0, y: 0, width: pts, height: pts)
+        UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: "origin")
     }
 
     @objc func hideHour() {

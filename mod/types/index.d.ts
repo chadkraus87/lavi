@@ -14,6 +14,14 @@ export type Signals = {
   contextPercent: number
 }
 
+/** Phone-ping bookkeeping for one session. */
+export type Pings = {
+  lastPushAt: number
+  nudged: boolean
+  turnFailed: boolean
+  waitingPushed: boolean
+}
+
 /** What the desktop character reads from ~/.claude/codebuddy/sessions/<id>.json */
 export type SessionFile = {
   id: string
@@ -33,6 +41,7 @@ declare module 'claude-code' {
       advice: Advice | null
       answer: string | null
       isAsking: boolean
+      pings: Pings
     }
   }
 }
