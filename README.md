@@ -97,7 +97,7 @@ While Lavi talks, its screen-mouth moves with the loudness of the audio. Text ap
 - **During calendar events:** reads your Calendar with permission and skips timed events marked busy.
 - **While a Focus is on:** macOS doesn't tell apps about Focus, so add two Shortcuts automations (Shortcuts → Automation → Focus). When the Focus turns on, *Run Shell Script* `mkdir -p ~/.claude/codebuddy && touch ~/.claude/codebuddy/focus-on`; when it turns off, `rm -f ~/.claude/codebuddy/focus-on`. Settings has copy buttons for both.
 
-**Read Ask Lavi answers aloud:** press 🔊 *read it to me* under an answer in the pane. The desktop robot speaks it live in Lavi's voice through ElevenLabs (about a penny per answer, capped at 800 characters). Paste your ElevenLabs API key into Settings once; it is stored only in your login Keychain.
+**Read Ask Lavi answers aloud:** press 🔊 *read it to me* under an answer in the pane. The desktop robot speaks it live in Lavi's voice through ElevenLabs (about 1 ElevenLabs credit per character, so roughly 300–500 credits, or $0.05–0.10, per answer; capped at 600 characters, and only when you press the button). Paste your ElevenLabs API key into Settings once; it is stored only in your login Keychain.
 
 **Morning check-in:** the first time Lavi's around on a new day, he sweeps your projects folder (default `~/Development/Projects`) and shows which repos have uncommitted or unpushed work. Everything is listed under *Across your projects* in the menu; click one to open a new Claude session there. Run it any time with *Check my projects now*.
 

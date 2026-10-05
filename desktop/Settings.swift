@@ -23,6 +23,15 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Read Ask Lavi answers aloud") {
+                Text("Only when you press 🔊 read it to me: about 1 ElevenLabs credit per character, so roughly 300–500 credits (~$0.05–0.10) per answer, capped at 600 characters. Lavi's everyday lines are pre-recorded and free. The key is kept only in your Keychain.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    SecureField(keySaved ? "saved in Keychain ✓ (paste to replace)" : "ElevenLabs API key", text: $apiKey)
+                    Button("Save") { keySaved = Keychain.set(apiKey) && !apiKey.isEmpty; apiKey = "" }
+                    if keySaved { Button("Remove") { Keychain.set(""); keySaved = false } }
+                }
+            }
             Section("Voice") {
                 Toggle("Lavi talks", isOn: $voiceOn)
                 HStack { Text("Volume"); Slider(value: $volume, in: 0.1...1) }
@@ -54,15 +63,6 @@ struct SettingsView: View {
                 HStack {
                     TextField("Projects folder", text: $projectsRoot)
                     Button("Choose…") { chooseFolder() }
-                }
-            }
-            Section("Read Ask Lavi answers aloud") {
-                Text("Uses ElevenLabs live, about a penny per answer, in Lavi's voice. The key is kept only in your Keychain.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    SecureField(keySaved ? "saved in Keychain ✓ (paste to replace)" : "ElevenLabs API key", text: $apiKey)
-                    Button("Save") { keySaved = Keychain.set(apiKey) && !apiKey.isEmpty; apiKey = "" }
-                    if keySaved { Button("Remove") { Keychain.set(""); keySaved = false } }
                 }
             }
             Section("Phone pings") {
