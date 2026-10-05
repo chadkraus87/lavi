@@ -199,6 +199,7 @@ async function doctor($: EngineInterface) {
     `${ok(await pingsOn($))} pings ${cfgNow.quiet ? '(this repo is quiet via .lavi.json)' : ''}`,
     `   last ping: ${(await $.store.get('lastPing')) ?? 'none yet (try /lavi pings test)'}`,
     `   last prompt button: ${(await $.store.get('lastFill')) ?? 'none yet (click one in the band to test)'}`,
+    `   last read-aloud: ${await $.fs.read(`${home}/.claude/codebuddy/read-aloud-status.txt`).catch(() => 'none yet (🔊 read it to me under an Ask Lavi answer)')}`,
     `   drawing on: ${surfaces.join(', ') || 'nothing yet'}${surfaces.includes('mobile') ? ' (your phone is attached)' : ''}`,
     `   tracking: ${s.editsSinceTest} edits since tests · tests ${s.lastTest ?? 'not run'} · lint ${s.lastLint ?? 'not run'} · CI ${s.ci ?? 'n/a'}${s.prNumber ? ` (PR #${s.prNumber})` : ''} · ${s.behind} behind ${s.defaultBranch || 'main'}`,
     `   .lavi.json: ${Object.keys(cfgNow).length ? JSON.stringify(cfgNow) : 'none'}`,

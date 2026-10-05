@@ -21,6 +21,7 @@ let idleFPS = 8.0 // frames were sampled at 8 fps from the clip
 let sayFile = home.appendingPathComponent(".claude/codebuddy/say.json")
 let qaFile = home.appendingPathComponent(".claude/codebuddy/qa-prompt.txt")
 let openSettingsFile = home.appendingPathComponent(".claude/codebuddy/open-settings")
+let readStatusFile = home.appendingPathComponent(".claude/codebuddy/read-aloud-status.txt") // shown by /lavi doctor
 let sleepyAfter: Double = 30 * 60 * 1000 // ms with no activity before the robot dozes off
 
 /// Mood art bundled in Contents/Resources (built from desktop/art). Missing art falls back to the drawn blob.
@@ -370,8 +371,20 @@ final class Bubble: NSPanel {
         contentView = bubbleView
     }
 
+    private var generation = 0
+
+    /// Shows the bubble, then hides it after `seconds`, unless a newer bubble replaced it by then.
+    func flash(_ text: String, detail: String? = nil, near f: NSRect, for seconds: TimeInterval) {
+        show(text, detail: detail, near: f)
+        let mine = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            if self?.generation == mine { self?.orderOut(nil) }
+        }
+    }
+
     /// `text` is the bold headline; `detail` is the smaller line under it.
     func show(_ text: String, detail: String? = nil, near f: NSRect) {
+        generation += 1
         let para = NSMutableParagraphStyle(); para.lineSpacing = 1
         bubbleView.headline = NSAttributedString(string: text, attributes: [
             .font: BubbleView.rounded(16, .semibold), .foregroundColor: BubbleView.ink, .paragraphStyle: para])
@@ -461,8 +474,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.lastGreeting = Date() // so a new session file doesn't greet twice
             if self.morningCheckIn() { return }
             if self.voice.say("greeting", skipGap: true) != nil {
-                self.bubble.show("hey, welcome back!", detail: "lavi here. click me any time for what's next.", near: self.panel.frame)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.bubble.orderOut(nil) }
+                self.bubble.flash("hey, welcome back!", detail: "lavi here. click me any time for what's next.", near: self.panel.frame, for: 5)
             }
         }
         // Goodbye: macOS can't delay another app's quit, so Lavi says it as Claude closes and lingers for the clip.
@@ -485,8 +497,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Speak up briefly when the advice changes.
         let key = "\(s?.id ?? "")|\(s?.steps.first?.text ?? "")"
         if !lastMood.isEmpty, key != lastMood, let s, s.status == "idle", let step = s.steps.first, panel.isVisible {
-            bubble.show(step.text, detail: s.project, near: panel.frame)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.bubble.orderOut(nil) }
+            bubble.flash(step.text, detail: s.project, near: panel.frame, for: 6)
         }
         lastMood = key
         if Date() < celebrateUntil { view.mood = "happy" }
@@ -560,11 +571,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.checkIn = found
                 self.voice.say("morning", byYou: force, skipGap: true)
                 let lines = found.prefix(4).map(Projects.summary)
-                self.bubble.show(found.isEmpty ? "morning! everything's committed and pushed." : "morning! here's where things stand.",
+                self.bubble.flash(found.isEmpty ? "morning! everything's committed and pushed." : "morning! here's where things stand.",
                                  detail: found.isEmpty ? "clean slate across \((Prefs.projectsRoot as NSString).lastPathComponent)." :
                                     lines.joined(separator: "\n") + (found.count > 4 ? "\n+\(found.count - 4) more in my menu" : ""),
-                                 near: self.panel.frame)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 9) { [weak self] in self?.bubble.orderOut(nil) }
+                                 near: self.panel.frame, for: 9)
             }
         }
         return true
@@ -580,8 +590,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
               Date().timeIntervalSince(lastBreakNudge) > Prefs.breakMinutes * 60 else { return }
         lastBreakNudge = Date(); activeSince = Date()
         voice.say("break")
-        bubble.show("stretch break?", detail: "you've been at it \(Int(Prefs.breakMinutes)) min straight. stand up, grab water, look far away for a minute.", near: panel.frame)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.bubble.orderOut(nil) }
+        bubble.flash("stretch break?", detail: "you've been at it \(Int(Prefs.breakMinutes)) min straight. stand up, grab water, look far away for a minute.", near: panel.frame, for: 10)
     }
 
     /// The mod's "read it to me" button drops a request in say.json; read it out in Lavi's live voice.
@@ -591,16 +600,21 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let text = req["text"] as? String, let at = req["at"] as? Double else { return }
         guard at > lastSayAt else { return }
         lastSayAt = at
-        bubble.show("reading it out…", detail: String(text.prefix(140)) + (text.count > 140 ? "…" : ""), near: panel.frame)
+        func status(_ s: String) { try? "\(Date().formatted(date: .abbreviated, time: .standard)): \(s)".write(to: readStatusFile, atomically: true, encoding: .utf8) }
+        status("asked ElevenLabs (\(text.count) characters)…")
+        let preview = String(text.prefix(140)) + (text.count > 140 ? "…" : "")
+        bubble.flash("reading it out…", detail: preview, near: panel.frame, for: 35) // up to the request timeout
         Speech.synthesize(text) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let mp3):
-                let secs = self.voice.play(mp3) ?? 3
-                DispatchQueue.main.asyncAfter(deadline: .now() + max(secs + 0.8, 4)) { [weak self] in self?.bubble.orderOut(nil) }
+                let played = self.voice.play(mp3)
+                status(played == nil ? "got \(mp3.count) bytes but didn't play (Lavi's voice is off?)" : "played \(String(format: "%.1f", played!)) s of audio")
+                let secs = played ?? 3
+                self.bubble.flash("reading it out…", detail: preview, near: self.panel.frame, for: max(secs + 0.8, 4))
             case .failure(let e):
-                self.bubble.show("can't read it out yet", detail: e.message, near: self.panel.frame)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 7) { [weak self] in self?.bubble.orderOut(nil) }
+                status("failed: \(e.message)")
+                self.bubble.flash("can't read it out yet", detail: e.message, near: self.panel.frame, for: 7)
             }
         }
     }
@@ -610,8 +624,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         view.mood = "happy"
         view.hop(14)
         voice.say(kind == "push" ? "celebrate-push" : "celebrate-tests")
-        bubble.show(kind == "push" ? "pushed! 🚀" : "tests are green again! 🎉", detail: kind == "push" ? "your work's backed up on the remote." : "nice fix.", near: panel.frame)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.bubble.orderOut(nil) }
+        bubble.flash(kind == "push" ? "pushed! 🚀" : "tests are green again! 🎉", detail: kind == "push" ? "your work's backed up on the remote." : "nice fix.", near: panel.frame, for: 4)
     }
 
     /// Greeting, "done" and advice lines, decided from how the session files changed since the last tick.
@@ -808,9 +821,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let text = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        bubble.show("copied!", detail: "paste it into Claude (⌘V), tweak it, then hit enter.", near: panel.frame)
+        bubble.flash("copied!", detail: "paste it into Claude (⌘V), tweak it, then hit enter.", near: panel.frame, for: 3)
         voice.say("copied", byYou: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.bubble.orderOut(nil) }
     }
 
     @objc func copyResume(_ sender: NSMenuItem) {
