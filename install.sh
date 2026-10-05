@@ -55,9 +55,10 @@ swiftc -O -swift-version 5 "$ROOT"/desktop/*.swift -o "$BUILD/Contents/MacOS/Cod
 # Signed with a stable certificate, every rebuild is "the same app" to macOS, so the Keychain key and calendar
 # permission stay granted. Uses LAVI_SIGN_IDENTITY, else your first Apple Development / Developer ID certificate,
 # else stays ad-hoc (which works, but macOS asks again after each rebuild).
-IDENTITY="${LAVI_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+# By the certificate's hash: a name can match several certificates (one per Mac you've used), which codesign refuses.
+IDENTITY="${LAVI_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development|Developer ID Application/ {print $2; exit}')}"
 if [ -n "$IDENTITY" ] && codesign --force --sign "$IDENTITY" "$BUILD" 2>/dev/null; then
-  echo "Signed with: $IDENTITY"
+  echo "Signed with: $(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' -v h="$IDENTITY" '$0 ~ h {print $2; exit}')"
 else
   codesign --force --sign - "$BUILD"
   echo "Ad-hoc signed (no signing certificate found)."

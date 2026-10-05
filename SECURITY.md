@@ -19,10 +19,11 @@ with the steps to reproduce and what an attacker could do. You'll get a reply as
 ## Design notes
 
 - Lavi treats a repo's `.lavi.json`, session files, transcript names and staged file names as untrusted input.
-- The pre-commit check reports file names only, never the matched secret, and runs git without external diff
-  tools or textconv filters.
+- The pre-commit check reports file names only, never the matched secret.
+- Every git call runs with `core.fsmonitor=false` and the repo's own filter drivers emptied (diffs also without
+  external diff tools or textconv), so a repo's local config can't make Lavi run a program.
 - A prompt handed over by the desktop app only fills the session it names, only as an unsent draft, and only if
-  it is under 15 seconds old.
+  it is under 3 seconds old.
 - The ElevenLabs key lives only in the macOS login Keychain; it is never written to disk or logged.
 - Nothing is sent anywhere except pings (Claude Code's push service), `gh` status calls, and
   read-aloud text when you press the button.

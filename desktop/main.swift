@@ -228,8 +228,6 @@ final class BuddyView: NSView {
     var mouth: Int? // 0 closed, 1 half, 2 open: set while Lavi speaks
     var onClick: ((NSEvent) -> Void)?
     var onHover: ((Bool) -> Void)?
-    /// Sessions blocked on you: drawn as a count badge on his head.
-    var badge = 0 { didSet { if badge != oldValue { needsDisplay = true } } }
     private var dragStart: NSPoint?
     private var didDrag = false
 
@@ -267,18 +265,6 @@ final class BuddyView: NSView {
         return bounceAmp * CGFloat(exp(-5 * t) * abs(sin(t * 14)))
     }
 
-    /// An ink circle with a white count and a lavender ring, top right, bobbing with him.
-    func drawBadge(_ bob: CGFloat) {
-        guard badge > 0 else { return }
-        let d = max(20, bounds.width * 0.17)
-        let r = NSRect(x: bounds.maxX - d - 4, y: bounds.maxY - d - 6 + bob, width: d, height: d)
-        let ring = NSBezierPath(ovalIn: r.insetBy(dx: -2, dy: -2)); Theme.lavender.setFill(); ring.fill()
-        Theme.ink.setFill(); NSBezierPath(ovalIn: r).fill()
-        let t = NSAttributedString(string: badge > 9 ? "9+" : "\(badge)", attributes: [.font: BubbleView.rounded(d * 0.55, .bold), .foregroundColor: NSColor.white])
-        let ts = t.size()
-        t.draw(at: NSPoint(x: r.midX - ts.width / 2, y: r.midY - ts.height / 2))
-    }
-
     var color: NSColor {
         switch mood {
         case "worried": return .systemRed
@@ -300,10 +286,8 @@ final class BuddyView: NSView {
             NSColor.black.withAlphaComponent(0.16).setFill()
             NSBezierPath(ovalIn: NSRect(x: bounds.width * 0.28, y: 2, width: bounds.width * 0.44, height: bounds.height * 0.06)).fill()
             img.draw(in: bounds.insetBy(dx: 2, dy: 2).offsetBy(dx: 0, dy: bob + 2), from: .zero, operation: .sourceOver, fraction: 1)
-            drawBadge(bob)
             return
         }
-        defer { drawBadge(bob) }
         let body = NSRect(x: 10, y: 8 + bob, width: bounds.width - 20, height: bounds.height - 22)
         // shadow
         NSColor.black.withAlphaComponent(0.18).setFill()
@@ -333,6 +317,46 @@ final class BuddyView: NSView {
         default: m.move(to: NSPoint(x: mx - 7, y: my)); m.line(to: NSPoint(x: mx + 7, y: my))
         }
         NSColor.black.withAlphaComponent(0.75).setStroke(); m.stroke()
+    }
+}
+
+/// Sessions blocked on you, as a count badge in a little window of its own just above Lavi's head.
+/// His art fills his whole frame in some poses (a raised hand, a hop), so a badge drawn on him would cover him.
+/// As a child window it follows him when you drag him.
+final class Badge: NSPanel {
+    var count = 0 { didSet { if count != oldValue { contentView?.needsDisplay = true } } }
+
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 30, height: 30), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        isOpaque = false; backgroundColor = .clear; hasShadow = false; ignoresMouseEvents = true
+        level = .floating; hidesOnDeactivate = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        contentView = BadgeView(badge: self)
+    }
+
+    /// Above his head on the right; beside him when he's at the top of the screen.
+    func place(over lavi: NSRect, size laviSize: CGFloat) {
+        let d = max(22, laviSize * 0.17) + 4 // + the lavender ring
+        let vf = (screen ?? NSScreen.screens.first { $0.frame.intersects(lavi) } ?? NSScreen.main)?.visibleFrame ?? lavi
+        var o = NSPoint(x: lavi.maxX - d - laviSize * 0.08, y: lavi.maxY - 2)
+        if o.y + d > vf.maxY { o = NSPoint(x: lavi.maxX - 2, y: lavi.maxY - d - laviSize * 0.1) }
+        if o.x + d > vf.maxX { o.x = lavi.minX - d + 2 }
+        setFrame(NSRect(origin: o, size: NSSize(width: d, height: d)), display: true)
+    }
+
+    private final class BadgeView: NSView {
+        weak var badge: Badge?
+        init(badge: Badge) { self.badge = badge; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { nil }
+        override func draw(_ dirty: NSRect) {
+            guard let n = badge?.count, n > 0 else { return }
+            Theme.lavender.setFill(); NSBezierPath(ovalIn: bounds).fill()
+            let r = bounds.insetBy(dx: 2, dy: 2)
+            Theme.ink.setFill(); NSBezierPath(ovalIn: r).fill()
+            let t = NSAttributedString(string: n > 9 ? "9+" : "\(n)", attributes: [.font: BubbleView.rounded(r.height * 0.55, .bold), .foregroundColor: NSColor.white])
+            let ts = t.size()
+            t.draw(at: NSPoint(x: r.midX - ts.width / 2, y: r.midY - ts.height / 2))
+        }
     }
 }
 
@@ -495,6 +519,7 @@ final class App: NSObject, NSApplicationDelegate {
     let view = BuddyView(frame: NSRect(x: 0, y: 0, width: size, height: size))
     let bubble = Bubble()
     let menuPanel = MenuPanel()
+    let badge = Badge()
     var sessions: [BuddySession] = []
     var hiddenUntil = Date.distantPast
     var lastMood = ""
@@ -580,12 +605,12 @@ final class App: NSObject, NSApplicationDelegate {
     func tick() {
         let visible = Date() < holdVisibleUntil || (Date() > hiddenUntil && isClaudeRunning())
         if visible != panel.isVisible { visible ? panel.orderFrontRegardless() : panel.orderOut(nil) }
-        if !visible { bubble.orderOut(nil); menuPanel.close() }
+        if !visible { bubble.orderOut(nil); menuPanel.close(); setBadge(0) }
         sessions = loadBuddySessions()
         let s = sessions.first
         let idleFor = Date().timeIntervalSince1970 * 1000 - (s?.updatedAt ?? 0)
         view.mood = s == nil || (s!.status == "idle" && idleFor > sleepyAfter) ? "sleepy" : s!.mood
-        let waitingN = sessions.filter { $0.waiting != nil && $0.status != "ended" }.count
+        let waitingN = sessions.filter(isWaiting).count
         view.setAccessibilityLabel((s.map { "Lavi, \($0.project): \($0.steps.first?.text ?? "idle")" } ?? "Lavi, dozing. No active session.")
             + (waitingN > 0 ? ". \(waitingN) session\(waitingN == 1 ? "" : "s") waiting on you." : ""))
         // Speak up briefly when the advice changes.
@@ -732,9 +757,9 @@ final class App: NSObject, NSApplicationDelegate {
 
     /// Claude blocked on you somewhere: a badge with the count, and a hop + bubble the first time each one appears.
     func noticeWaiting() {
-        let now = Date().timeIntervalSince1970 * 1000
-        let blocked = sessions.filter { $0.status != "ended" && $0.waiting != nil && now - $0.updatedAt < 6 * 3_600_000 }
-        view.badge = blocked.count
+        // Only a session mid-turn can be blocked on you: a finished turn clears it, so "idle" + waiting is stale.
+        let blocked = sessions.filter(isWaiting)
+        setBadge(blocked.count)
         let keys = Set(blocked.map { "\($0.id)|\($0.waiting!.since)" })
         defer { seenWaiting = keys }
         guard !isFirstTick, panel.isVisible, let s = blocked.first(where: { !seenWaiting.contains("\($0.id)|\($0.waiting!.since)") }), s.quiet != true else { return }
@@ -742,6 +767,24 @@ final class App: NSObject, NSApplicationDelegate {
         voice.say("waiting")
         bubble.flash("\(s.project) needs you", detail: s.waiting!.kind == "question" ? "Claude asked you a question. click me to jump to it." : "Claude needs your OK to run something. click me to jump to it.",
                      place: (s.project, s.branch), near: panel.frame, for: 8)
+    }
+
+    /// Blocked on you: only mid-turn (a finished turn clears it, so idle + waiting is stale), and not from a session
+    /// that went quiet hours ago (killed while a dialog was up).
+    func isWaiting(_ s: BuddySession) -> Bool {
+        s.waiting != nil && s.status == "busy" && Date().timeIntervalSince1970 * 1000 - s.updatedAt < 6 * 3_600_000
+    }
+
+    func setBadge(_ n: Int) {
+        badge.count = n
+        let show = n > 0 && panel.isVisible
+        if show {
+            badge.place(over: panel.frame, size: size)
+            if badge.parent == nil { panel.addChildWindow(badge, ordered: .above) } // follows him when dragged
+            badge.orderFront(nil)
+        } else if badge.isVisible {
+            panel.removeChildWindow(badge); badge.orderOut(nil)
+        }
     }
 
     /// End of the day: what's not committed or pushed across your projects, and a nudge to write the handoff.
@@ -767,14 +810,14 @@ final class App: NSObject, NSApplicationDelegate {
 
     /// Puts a prompt (or `/lavi handoff`'s draft) in the session's message box through the mod. You still press Enter.
     /// No answer within 2.5 s (the session is closed, busy in a dialog, or has no box): the clipboard instead.
-    func sendToSession(_ text: String?, handoff: Bool = false) {
-        guard let s = sessions.first, isSessionID(s.id), s.status != "ended" else {
-            return handoff ? copy("/lavi handoff") : copy(text ?? "")
-        }
+    /// `to`: the session the menu showed when you clicked (the list re-sorts every 2 s while it's open).
+    func sendToSession(_ text: String?, handoff: Bool = false, to target: BuddySession?) {
+        let fallback = handoff ? "/lavi handoff" : (text ?? "")
+        guard let s = target, isSessionID(s.id), s.status != "ended" else { return copy(fallback) }
         let id = UUID().uuidString
         var req: [String: Any] = ["to": s.id, "at": Date().timeIntervalSince1970 * 1000, "id": id]
         if handoff { req["action"] = "handoff" } else { req["text"] = text ?? "" }
-        guard let data = try? JSONSerialization.data(withJSONObject: req), (try? data.write(to: fillFile, options: .atomic)) != nil else { return copy(text ?? "") }
+        guard let data = try? JSONSerialization.data(withJSONObject: req), (try? data.write(to: fillFile, options: .atomic)) != nil else { return copy(fallback) }
         let started = Date()
         fillTimer?.invalidate()
         fillTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] t in
@@ -789,10 +832,10 @@ final class App: NSObject, NSApplicationDelegate {
                                       detail: handoff ? "give me a few seconds. it lands in \(s.project)'s message box for you to review." : "tweak it if you want, then hit enter.",
                                       place: (s.project, s.branch), near: self.panel.frame, for: 4)
                     self.voice.say(handoff ? "handoff" : "sent", byYou: true)
-                } else { self.copy(handoff ? "/lavi handoff" : text ?? "") }
-            } else if Date().timeIntervalSince(started) > 2.5 {
+                } else { self.copy(fallback) }
+            } else if Date().timeIntervalSince(started) > 3.5 { // the mod drops requests older than 3 s, so no double
                 t.invalidate()
-                self.copy(handoff ? "/lavi handoff" : text ?? "")
+                self.copy(fallback)
             }
         }
     }
@@ -881,10 +924,11 @@ final class App: NSObject, NSApplicationDelegate {
         // Ids come from file names and session files on disk: only real session ids become rows,
         // so a crafted file can't turn "Resume in Terminal" into a shell command.
         // Sessions waiting on you go first.
-        d.live = sessions.filter { isSessionID($0.id) }.sorted { ($0.waiting != nil ? 0 : 1) < ($1.waiting != nil ? 0 : 1) }.map {
-            .init(id: $0.id, cwd: $0.cwd, title: $0.project,
-                  subtitle: $0.waiting.map { $0.kind == "question" ? "Claude asked you a question" : "Claude needs your OK" } ?? $0.steps.first?.text ?? $0.status,
-                  busy: $0.status == "busy" && $0.waiting == nil, inApp: appIDs[$0.id] != nil, waiting: $0.waiting != nil && $0.status != "ended")
+        d.live = sessions.filter { isSessionID($0.id) }.sorted { (isWaiting($0) ? 0 : 1) < (isWaiting($1) ? 0 : 1) }.map { s in
+            let w = isWaiting(s)
+            return .init(id: s.id, cwd: s.cwd, title: s.project,
+                         subtitle: w ? (s.waiting!.kind == "question" ? "Claude asked you a question" : "Claude needs your OK") : s.steps.first?.text ?? s.status,
+                         busy: s.status == "busy" && !w, inApp: appIDs[s.id] != nil, waiting: w)
         }
         let live = Set(sessions.map(\.id))
         let fmt = RelativeDateTimeFormatter(); fmt.unitsStyle = .short
@@ -896,8 +940,8 @@ final class App: NSObject, NSApplicationDelegate {
         func done(_ f: @escaping () -> Void) -> () -> Void { { [weak self] in self?.menuPanel.close(); f() } }
         let focus = sessions.first
         var a = MenuActions()
-        a.send = { [weak self] t in self?.menuPanel.close(); self?.sendToSession(t) }
-        a.handoff = done { [weak self] in self?.sendToSession(nil, handoff: true) }
+        a.send = { [weak self] t in self?.menuPanel.close(); self?.sendToSession(t, to: focus) }
+        a.handoff = done { [weak self] in self?.sendToSession(nil, handoff: true, to: focus) }
         a.open = { [weak self] r in self?.menuPanel.close(); self?.open(self?.appIDs[r.id].map { "claude://claude.ai/epitaxy/\($0)" } ?? "claude://resume?session=\(r.id)") }
         a.resumeInTerminal = { [weak self] r in self?.menuPanel.close(); self?.resumeInTerminal(id: r.id, cwd: r.cwd) }
         a.copyResume = { [weak self] r in self?.menuPanel.close(); self?.resumeCommand(id: r.id, cwd: r.cwd).map { self?.copy($0, announce: false) } }
@@ -910,7 +954,7 @@ final class App: NSObject, NSApplicationDelegate {
         // One session waiting: straight to it. Otherwise the app's own waiting list.
         a.waiting = done { [weak self] in
             guard let self else { return }
-            let blocked = self.sessions.filter { $0.waiting != nil && $0.status != "ended" }
+            let blocked = self.sessions.filter(self.isWaiting)
             if blocked.count == 1, let app = blocked[0].appId, isAppSessionID(app) { self.open("claude://claude.ai/epitaxy/\(app)") }
             else { self.open("claude://code/needs-input") }
         }
@@ -927,7 +971,9 @@ final class App: NSObject, NSApplicationDelegate {
     func open(_ s: String) { if let url = URL(string: s) { NSWorkspace.shared.open(url) } }
 
     func resumeCommand(id: String, cwd: String) -> String? {
-        guard isSessionID(id) else { return nil }
+        // `do script` types the command, so a control character in a folder name (Ctrl-C, then a newline) could
+        // end the quoted line early and run what follows.
+        guard isSessionID(id), !cwd.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) else { return nil }
         let quoted = "'" + cwd.replacingOccurrences(of: "'", with: "'\\''") + "'"
         return "cd \(quoted) && claude --resume '\(id)'"
     }

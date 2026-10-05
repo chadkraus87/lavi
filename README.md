@@ -230,8 +230,10 @@ Settings has copy buttons for both commands.
 - **What's stored:** small session files, your last read-aloud request, the last prompt the robot handed to a session (and its answer), and a status line, all in `~/.claude/codebuddy` (locked to your account, `0700`). Old session files are cleaned up after 7 days. Your ElevenLabs key is kept only in your login Keychain.
 - **Hardening:**
   - session ids are validated before anything touches a shell or a link (desktop sessions open directly by their app id instead of being re-imported)
-  - git runs with `core.fsmonitor=false` (and diffs with `--no-ext-diff --no-textconv`), because a repo's local config could otherwise make git run a program
-  - a prompt from the robot only fills the session it names, only as a draft (never sent), and only if it's under 15 seconds old
+  - git runs with `core.fsmonitor=false` and with the repo's own filter drivers emptied (diffs also use `--no-ext-diff --no-textconv`), because a repo's local config could otherwise make git run a program
+  - branch and file names from a repo only reach the prompts Lavi offers in a safe form
+  - a prompt from the robot only fills the session it names, only as a draft (never sent), and only if it's under 3 seconds old
+  - Resume in Terminal refuses folder names with control characters
   - `.lavi.json` is sanitized
   - ping text is redacted
   - read-aloud is rate-limited to one request every 5 seconds

@@ -42,7 +42,11 @@ struct SettingsView: View {
                     Note("Only when you press 🔊 read it to me under an Ask Lavi answer. Uses ElevenLabs' Eleven v4 Turbo, so he starts talking in under a second. A full answer (capped at 600 characters) costs about 2–3¢ in ElevenLabs credits. His everyday lines are pre-recorded and free. The key is kept only in your Keychain.")
                     HStack(spacing: 8) {
                         SecureField(keySaved ? "saved in Keychain ✓ (paste to replace)" : "ElevenLabs API key", text: $apiKey).textFieldStyle(.roundedBorder)
-                        Button("Save") { keySaved = Keychain.set(apiKey) && !apiKey.isEmpty; apiKey = "" }.buttonStyle(ChipStyle())
+                        // An empty field means "keep the saved key", not "delete it" (that's Remove key).
+                        Button("Save") {
+                            guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                            keySaved = Keychain.set(apiKey); apiKey = ""
+                        }.buttonStyle(ChipStyle())
                     }
                     HStack(spacing: 8) {
                         // One click: whatever's on the clipboard goes straight to the Keychain, then the clipboard is cleared.

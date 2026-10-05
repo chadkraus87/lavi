@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { Advice, Answer, LaviConfig, Pings, SessionFile, Signals, Staged, Waiting } from '../types'
 import { approvalPing, canPush, NO_PINGS, NUDGE_AFTER_MS, nudgePing, questionPing, redact, turnPing } from './pings'
-import { advise, CI_CHECK_EVERY_MS, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseFocus, parseGitStatus, parsePr, QA_PROMPT, sanitizeConfig, scanStaged, speakable } from './rules'
+import { advise, CI_CHECK_EVERY_MS, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseFocus, filterOverrides, parseGitStatus, parsePr, QA_PROMPT, sanitizeConfig, scanStaged, speakable } from './rules'
 
 const PANE = 'codebuddy'
 // The voice is casual; the thinking is not. Keep both halves of this prompt.
@@ -34,10 +34,13 @@ const isAsking = atom({ plugin: 'codebuddy', key: 'isAsking' } as const, false)
 const pings = atom({ plugin: 'codebuddy', key: 'pings' } as const, NO_PINGS as Pings)
 const waiting = atom({ plugin: 'codebuddy', key: 'waiting' } as const, null as Waiting)
 
+let noFilters: string[] = [] // this repo's own filter drivers, emptied (see filterOverrides); refreshed each refresh
+
 const git = async ($: EngineInterface, ...args: string[]) => {
   try {
-    // core.fsmonitor off: a repo's local config can point it at any program, and git status would run it.
-    const r = await $.process.run(['git', '-c', 'core.fsmonitor=false', ...args], { timeoutMs: 5000 })
+    // core.fsmonitor off and filters emptied: a repo's local config can point either at any program, and
+    // git status would run it.
+    const r = await $.process.run(['git', '-c', 'core.fsmonitor=false', ...noFilters, ...args], { timeoutMs: 5000 })
     return r.exitCode === 0 ? r.stdout.trim() : null
   } catch {
     return null
@@ -49,22 +52,24 @@ let cfg: LaviConfig = {} // ponytail: re-read every refresh; cheap, and edits to
 /** A repo's optional .lavi.json (quiet, testCommand, thresholds). */
 const loadConfig = async ($: EngineInterface): Promise<LaviConfig> => {
   try {
-    return sanitizeConfig(JSON.parse(await $.fs.read(`${await $.session.cwd()}/.lavi.json`)))
+    return sanitizeConfig(JSON.parse(await $.fs.read(`${await projectDir($)}/.lavi.json`)))
   } catch {
     return {}
   }
 }
 
+let root = '' // the repo's top folder, so a `cd` into a subfolder doesn't rename the session
+const projectDir = async ($: EngineInterface) => root || (await $.session.cwd())
 const project = async ($: EngineInterface) => {
-  const cwd = await $.session.cwd()
-  return cwd.split('/').pop() || cwd
+  const dir = await projectDir($)
+  return dir.split('/').pop() || dir
 }
 
 // Mirrors this session into ~/.claude/codebuddy/sessions/<id>.json for the desktop character.
 const writeFile = async ($: EngineInterface, status: SessionFile['status']) => {
   const home = await $.env.get('HOME')
   if (!home) return
-  const [id, cwd, a, s, w] = await Promise.all([$.session.id(), $.session.cwd(), read($, advice), read($, signals), read($, waiting)])
+  const [id, cwd, a, s, w] = await Promise.all([$.session.id(), projectDir($), read($, advice), read($, signals), read($, waiting)])
   // In the desktop app, its own session id lets the robot open this session instead of importing a copy.
   const host = await $.env.get('CLAUDE_CODE_HOST_SESSION_ID')
   const appId = host && /^local_[A-Za-z0-9-]{1,64}$/.test(host) ? host : undefined
@@ -81,9 +86,10 @@ const writeFile = async ($: EngineInterface, status: SessionFile['status']) => {
  * No external diff tools or textconv filters: a repo's own config could point those at any program.
  */
 const checkStaged = async ($: EngineInterface): Promise<Staged | null> => {
-  const numstat = await git($, 'diff', '--cached', '--numstat', '--no-ext-diff', '--no-textconv')
+  // -z and --no-renames: real paths, never "dir/{a => b}" or a quoted escape, so a staged .env can't hide.
+  const numstat = await git($, 'diff', '--cached', '--numstat', '-z', '--no-renames', '--no-ext-diff', '--no-textconv')
   if (!numstat) return null
-  const diff = await git($, 'diff', '--cached', '-U0', '--no-color', '--no-ext-diff', '--no-textconv')
+  const diff = await git($, 'diff', '--cached', '-U0', '--no-renames', '--no-color', '--no-ext-diff', '--no-textconv')
   return scanStaged(numstat, (diff ?? '').slice(0, 400_000))
 }
 
@@ -95,7 +101,9 @@ const setWaiting = async ($: EngineInterface, w: Waiting) => {
   await writeFile($, 'busy')
 }
 
-let lastFillAt = 0 // ponytail: module memory; after a hot reload the 15 s staleness check stops replays
+let approvalFor = '' // the tool whose approval dialog is up
+
+let lastFillAt = 0 // ponytail: module memory; after a hot reload the 3 s staleness check stops replays
 
 /**
  * The desktop robot's prompt buttons: it writes {to, text | action, at, id} to fill.json and this
@@ -109,7 +117,8 @@ const fillFromDesktop = async ($: EngineInterface) => {
   try { req = JSON.parse(await $.fs.read(`${home}/.claude/codebuddy/fill.json`)) } catch { return }
   if (typeof req.at !== 'number' || req.at <= lastFillAt) return
   lastFillAt = req.at
-  if (req.to !== (await $.session.id()) || Date.now() - req.at > 15_000) return
+  // 3 s: the robot falls back to the clipboard after 3.5 s, so a late fill never lands twice.
+  if (req.to !== (await $.session.id()) || Date.now() - req.at > 3_000) return
   const ack = (ok: boolean, why?: string) =>
     $.fs.write(`${home}/.claude/codebuddy/fill-ack.json`, JSON.stringify({ id: req.id, ok, why, at: Date.now() })).catch(() => {})
   if (req.action === 'handoff') {
@@ -125,7 +134,10 @@ const fillFromDesktop = async ($: EngineInterface) => {
 }
 
 const refresh = async ($: EngineInterface) => {
+  // Reading config runs nothing.
+  noFilters = filterOverrides((await git($, 'config', '--local', '--name-only', '--get-regexp', '^filter\\.')) ?? '')
   const status = await git($, 'status', '--porcelain=v2', '--branch')
+  root = status === null ? '' : ((await git($, 'rev-parse', '--show-toplevel')) ?? '')
   const prev = await read($, signals)
   let next: Signals = { ...prev, isGit: status !== null }
   if (status !== null) {
@@ -351,10 +363,11 @@ export const register: Register = on => {
         void push($, questionPing(await project($), q)).catch(() => {})
       }
     }
-    // A tool running means any approval it needed was given.
-    else if (!e.agentId) await setWaiting($, null)
     const ran = await next(e)
-    if (e.tool === 'AskUserQuestion' && !e.agentId) await setWaiting($, null) // answered
+    // Answered: the question, or the approval this call waited on (ponytail: matched by tool name; an approved
+    // long command keeps the badge until it ends, as no event fires the moment the dialog closes).
+    if (e.tool === 'AskUserQuestion' && !e.agentId) await setWaiting($, null)
+    else if (e.tool === approvalFor) { approvalFor = ''; await setWaiting($, null) }
     if (ran.deny) return ran
     // A command sent to the background hasn't finished yet: its result says nothing about pass/fail.
     const background = (e as { run_in_background?: boolean }).run_in_background === true
@@ -379,15 +392,17 @@ export const register: Register = on => {
     return ran
   })
 
-  // Claude needs your approval to run a tool.
-  on('tool.check', async ($, e, next) => {
-    const verdict = await next(e)
-    if (verdict.decision === 'ask' && e.tool !== 'AskUserQuestion') await setWaiting($, { kind: 'approval', since: Date.now() })
-    if (verdict.decision === 'ask' && e.tool !== 'AskUserQuestion' && !(await read($, pings)).waitingPushed) {
+  // Claude needs your approval to run a tool. This fires only when the approval dialog is really shown:
+  // a tool.check verdict of 'ask' can be settled by auto mode's classifier without you.
+  // A subagent's approval needs you just the same.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    approvalFor = e.tool_name
+    await setWaiting($, { kind: 'approval', since: Date.now() })
+    if (!(await read($, pings)).waitingPushed) {
       await update($, pings, p => ({ ...p, waitingPushed: true }))
-      void push($, approvalPing(await project($), e.tool, e.input)).catch(() => {})
+      void push($, approvalPing(await project($), e.tool_name, e.tool_input)).catch(() => {})
     }
-    return verdict
+    return next(e)
   })
 
   on('turn.start', async ($, e, next) => {

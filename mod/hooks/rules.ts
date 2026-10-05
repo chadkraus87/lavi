@@ -73,16 +73,18 @@ export function scanStaged(numstat: string, diff: string): Staged {
   const clean = (p: string) => p.replace(/[^\w./ -]/g, '').slice(-60)
   const paths: string[] = []
   let lines = 0
-  for (const row of numstat.split('\n')) {
+  for (const row of numstat.split(numstat.includes('\0') ? '\0' : '\n')) {
     const [a, d, ...rest] = row.split('\t')
     if (!rest.length) continue
     paths.push(rest.join('\t'))
     lines += (Number(a) || 0) + (Number(d) || 0)
   }
   const secretFiles = new Set<string>()
-  let file = '', todos = 0
+  let file = '', todos = 0, prev = ''
   for (const line of diff.split('\n')) {
-    if (line.startsWith('+++ ')) { file = line.slice(4).replace(/^b\//, ''); continue }
+    const header = line.startsWith('+++ ') && prev.startsWith('--- ')
+    prev = line
+    if (header) { file = line.slice(4).replace(/^"?b\//, '').replace(/"$/, ''); continue }
     if (!line.startsWith('+')) continue
     if (TODO_RE.test(line)) todos++
     if (SECRET_RES.some(re => re.test(line))) secretFiles.add(clean(file))
@@ -96,6 +98,22 @@ export function scanStaged(numstat: string, diff: string): Staged {
     todos,
   }
 }
+
+/**
+ * `git config --local --name-only --get-regexp ^filter\.` → `-c` overrides that empty each of the repo's own
+ * filter drivers. A repo's local config can point a filter at any program, and `git status` runs it whenever
+ * a file's stat data changed (always, for a freshly unzipped repo). core.fsmonitor=false doesn't cover this.
+ */
+export function filterOverrides(configNames: string): string[] {
+  const drivers = new Set(configNames.split('\n').map(l => l.trim().match(/^filter\.(.+)\.[^.]+$/)?.[1]).filter((n): n is string => !!n))
+  return [...drivers].flatMap(n => ['-c', `filter.${n}.clean=`, '-c', `filter.${n}.smudge=`, '-c', `filter.${n}.process=`, '-c', `filter.${n}.required=false`])
+}
+
+/** A branch name for prompt text: ref names may hold `` ` `` `$` `;` `|`, so anything odd is described, not quoted. */
+export const safeRef = (ref: string, fallback: string) => (/^[\w./-]{1,60}$/.test(ref) ? ref : fallback)
+
+/** File names for prompt text, in backticks so they read as names, not instructions. */
+const quoted = (files: string[]) => files.slice(0, 3).map(f => `\`${f.split('/').pop() || f}\``).join(', ') + (files.length > 3 ? ` and ${files.length - 3} more` : '')
 
 const names = (files: string[]) => {
   const short = files.map(f => f.split('/').pop() || f)
@@ -153,10 +171,12 @@ export function advise(s: Signals, now = Date.now(), cfg: LaviConfig = {}): Advi
   const minutesSinceCommit = s.lastCommitAt ? (now - s.lastCommitAt) / 60000 : Infinity
   const sinceCommit = Number.isFinite(minutesSinceCommit) ? `${Math.round(minutesSinceCommit)} min` : 'ever (no commits yet)'
   const pr = s.prNumber ? `PR #${s.prNumber}` : 'this branch'
+  const branch = safeRef(s.branch, 'this branch'), main = safeRef(s.defaultBranch, 'the default branch')
 
   const st = s.staged
   if (st && (st.secretFiles.length || st.envFiles.length)) {
-    const where = names([...st.secretFiles, ...st.envFiles.filter(f => !st.secretFiles.includes(f))])
+    const flagged = [...st.secretFiles, ...st.envFiles.filter(f => !st.secretFiles.includes(f))]
+    const where = quoted(flagged)
     steps.push({
       id: 'secret', mood: 'worried',
       snippets: [
@@ -222,10 +242,10 @@ export function advise(s: Signals, now = Date.now(), cfg: LaviConfig = {}): Advi
     steps.push({
       id: 'branch', mood: 'nudge',
       snippets: [
-        snip('make a branch', `create a new branch for this work with a short descriptive name, move my uncommitted changes onto it, and keep ${s.branch} clean.`),
+        snip('make a branch', `create a new branch for this work with a short descriptive name, move my uncommitted changes onto it, and keep ${branch} clean.`),
       ],
-      text: `you're working straight on ${s.branch}. spin up a branch first.`,
-      why: `a branch is a safe sandbox: if this goes sideways, ${s.branch} stays clean.`,
+      text: `you're working straight on ${branch}. spin up a branch first.`,
+      why: `a branch is a safe sandbox: if this goes sideways, ${branch} stays clean.`,
     })
   if (st && st.lines >= BIG_STAGED_LINES && st.codeFiles > 0 && st.testFiles === 0)
     steps.push({
@@ -252,10 +272,10 @@ export function advise(s: Signals, now = Date.now(), cfg: LaviConfig = {}): Advi
     steps.push({
       id: 'rebase', mood: 'nudge',
       snippets: [
-        snip('rebase on main', `rebase this branch onto origin/${s.defaultBranch}, resolve any conflicts carefully, then run ${testCmd}.`),
+        snip('rebase on main', `rebase this branch onto ${main === 'the default branch' ? main : `origin/${main}`}, resolve any conflicts carefully, then run ${testCmd}.`),
       ],
-      text: `${s.defaultBranch} moved on. rebase before you push.`,
-      why: `${plural(s.behind, 'new commit')} on ${s.defaultBranch} you don't have yet. rebasing now keeps conflicts small.`,
+      text: `${main} moved on. rebase before you push.`,
+      why: `${plural(s.behind, 'new commit')} on ${main} you don't have yet. rebasing now keeps conflicts small.`,
     })
   if (s.contextPercent >= wrapAt)
     steps.push({
