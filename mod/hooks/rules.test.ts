@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Signals } from '../types'
-import { advise, commandHeads, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseGitStatus, parsePr, QA_PROMPT, sanitizeConfig, speakable } from './rules'
+import { advise, commandHeads, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseGitStatus, parseFocus, parsePr, QA_PROMPT, sanitizeConfig, speakable } from './rules'
 
 const NOW = 1_800_000_000_000
 const base: Signals = {
@@ -154,4 +154,13 @@ test('a hostile .lavi.json cannot smuggle text into prompts', () => {
 test('model-written prompt labels stay button-sized', () => {
   const a = parseAnswer('PROMPT: ' + 'a very long label that goes on and on forever' + ' | do it')
   expect(a.snippets[0]!.label.length).toBeLessThanOrEqual(28)
+})
+
+test('reads which Focus is on from macOS', () => {
+  const on = JSON.stringify({ data: [{ storeAssertionRecords: [{ assertionDetails: { assertionDetailsModeIdentifier: 'com.apple.focus.work' } }] }] })
+  expect(parseFocus(on)).toBe('com.apple.focus.work')
+  expect(parseFocus(JSON.stringify({ data: [{ storeAssertionRecords: [] }] }))).toBeNull()
+  expect(parseFocus(JSON.stringify({ data: [{}] }))).toBeNull()
+  expect(parseFocus('not json')).toBeNull()
+  expect(parseFocus(JSON.stringify({ data: [{ storeAssertionRecords: [{}] }] }))).toBe('focus')
 })

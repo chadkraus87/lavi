@@ -234,3 +234,18 @@ export function speakable(md: string, max = 600) {
     .replace(/^\s*[-•]\s*/gm, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim()
   return t.length > max ? t.slice(0, t.lastIndexOf(' ', max)) + '…' : t
 }
+
+/**
+ * The Focus mode that's on right now, from macOS's ~/Library/DoNotDisturb/DB/Assertions.json
+ * ("com.apple.focus.work", …), or null when none is. Malformed input counts as none.
+ */
+export function parseFocus(json: string): string | null {
+  try {
+    const records = JSON.parse(json)?.data?.[0]?.storeAssertionRecords
+    if (!Array.isArray(records) || records.length === 0) return null
+    const mode = records[0]?.assertionDetails?.assertionDetailsModeIdentifier
+    return typeof mode === 'string' && mode ? mode : 'focus'
+  } catch {
+    return null
+  }
+}

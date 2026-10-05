@@ -57,6 +57,8 @@ export type SessionFile = {
   updatedAt: number
   quiet?: boolean
   celebrate?: { kind: 'tests' | 'push'; at: number } | null
+  /** the Claude desktop app's own id for this session (local_…), when it runs there */
+  appId?: string
 }
 
 declare module 'claude-code' {

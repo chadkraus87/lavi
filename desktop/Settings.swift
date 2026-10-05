@@ -1,6 +1,7 @@
 // Lavi's Settings window (menu → Settings…, or ⌘, while the menu is open).
 import AppKit
 import SwiftUI
+import EventKit
 
 let launchAgent = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/com.chadkraus.codebuddy.plist")
 
@@ -52,9 +53,18 @@ struct SettingsView: View {
                     .onChange(of: calendarQuiet) { _, on in
                         if on { Quiet.requestCalendar { ok in calendarNote = ok ? "" : "calendar access was denied. allow it in System Settings → Privacy & Security → Calendars."; if !ok { calendarQuiet = false } } }
                     }
+                if calendarQuiet {
+                    // Show the real permission, not just the switch: macOS can forget it after a rebuild.
+                    let st = EKEventStore.authorizationStatus(for: .event)
+                    HStack {
+                        Text(st == .fullAccess ? "calendar access: granted ✓" : st == .notDetermined ? "calendar access: not asked yet" : "calendar access: off. allow CodeBuddy in System Settings → Privacy & Security → Calendars.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if st == .notDetermined { Button("Allow…") { Quiet.requestCalendar { ok in calendarNote = ok ? "" : "access wasn't granted." } } }
+                    }
+                }
                 if !calendarNote.isEmpty { Text(calendarNote).font(.caption).foregroundStyle(.secondary) }
                 Toggle("While a Focus mode is on", isOn: $focusQuiet)
-                Text("macOS doesn't tell apps about Focus, so add two Shortcuts automations (Shortcuts → Automation → New → Focus): when it turns on, Run Shell Script with the first command; when it turns off, the second.")
+                Text("Works on its own for any Focus you turn on. Scheduled Focus modes may not show up; for those, add Shortcuts automations that run these commands when the Focus turns on and off.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Copy “Focus on” command") { copy(Quiet.focusOnCommand) }

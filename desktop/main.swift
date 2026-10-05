@@ -3,6 +3,7 @@
 // ~/.claude/projects/*/*.jsonl (Claude Code transcripts). No dependencies.
 import AppKit
 import AVFoundation
+import EventKit
 
 let home = FileManager.default.homeDirectoryForCurrentUser
 let buddyDir = home.appendingPathComponent(".claude/codebuddy/sessions")
@@ -36,7 +37,7 @@ struct Celebrate: Decodable { let kind: String; let at: Double }
 struct BuddySession: Decodable {
     let id: String, cwd: String, project: String, branch: String
     let status: String, mood: String, steps: [Step], updatedAt: Double
-    let quiet: Bool?, celebrate: Celebrate?
+    let quiet: Bool?, celebrate: Celebrate?, appId: String?
 }
 struct Transcript { let id: String; let cwd: String; let title: String; let modified: Date }
 
@@ -90,6 +91,19 @@ func loadTranscripts(limit: Int = 15) -> [Transcript] {
         return Transcript(id: url.deletingPathExtension().lastPathComponent, cwd: cwd,
                           title: oneLine.isEmpty ? "(no prompt yet)" : String(oneLine.prefix(60)), modified: date)
     }
+}
+
+/// The desktop app's own session id ("local_…"), from the session file. Same shape the app's URL handler accepts.
+func isAppSessionID(_ s: String) -> Bool { s.range(of: "^local_[A-Za-z0-9-]{1,64}$", options: .regularExpression) != nil }
+
+/// CLI session id → desktop app session id, for every session Lavi has seen (including ended ones).
+func appSessionIDs() -> [String: String] {
+    let files = (try? FileManager.default.contentsOfDirectory(at: buddyDir, includingPropertiesForKeys: nil)) ?? []
+    var map: [String: String] = [:]
+    for f in files where f.pathExtension == "json" {
+        if let s = try? JSONDecoder().decode(BuddySession.self, from: Data(contentsOf: f)), let a = s.appId, isAppSessionID(a) { map[s.id] = a }
+    }
+    return map
 }
 
 /// A Claude Code session id: a UUID, nothing else.
@@ -434,6 +448,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastBreakNudge = Date()
     var checkIn: [ProjectState] = [] // last morning check-in
     var ticks = 0
+    var appIDs: [String: String] = [:] // refreshed each time the menu opens
 
     func applicationDidFinishLaunching(_ n: Notification) {
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
@@ -566,7 +581,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             clampOnScreen()
         }
         Prefs.hotkeyOn ? hotkey.register() : hotkey.unregister()
+        // Calendar quiet needs calendar access. A rebuilt (unsigned) app counts as a new app to macOS, which
+        // forgets the old grant, so ask again whenever the setting is on and access isn't decided yet.
+        if Prefs.calendarQuiet && EKEventStore.authorizationStatus(for: .event) == .notDetermined && !askedCalendar {
+            askedCalendar = true
+            Quiet.requestCalendar { _ in }
+        }
     }
+    var askedCalendar = false
 
     /// First time Lavi's around on a new day: a sweep of your projects for loose ends. True if it ran.
     @discardableResult
@@ -742,6 +764,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(action("New Claude Code session", #selector(openURL(_:)), "claude://code/new"))
         menu.addItem(.separator())
 
+        appIDs = appSessionIDs()
         let live = Set(sessions.map(\.id))
         if !sessions.isEmpty {
             menu.addItem(header("Live"))
@@ -808,7 +831,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // so a crafted file can't turn "Resume in Terminal" into a shell command.
         guard isSessionID(id) else { item.isEnabled = false; return item }
         let sub = NSMenu()
-        sub.addItem(action("Open in Claude app", #selector(openURL(_:)), "claude://resume?session=\(id)"))
+        // A session that already lives in the desktop app opens directly; a CLI-only one is imported (claude://resume).
+        let open = appIDs[id].map { "claude://claude.ai/epitaxy/\($0)" } ?? "claude://resume?session=\(id)"
+        sub.addItem(action(appIDs[id] == nil ? "Open in Claude app (imports it)" : "Open in Claude app", #selector(openURL(_:)), open))
         sub.addItem(action("Resume in Terminal", #selector(resumeInTerminal(_:)), [id, cwd]))
         sub.addItem(action("Copy resume command", #selector(copyResume(_:)), [id, cwd]))
         item.submenu = sub
@@ -886,6 +911,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
+if CommandLine.arguments.contains("--check-quiet") { Quiet.writeCheck(); exit(0) }
 let app = NSApplication.shared
 let delegate = App()
 app.delegate = delegate

@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { Advice, Answer, LaviConfig, Pings, SessionFile, Signals } from '../types'
 import { approvalPing, canPush, NO_PINGS, NUDGE_AFTER_MS, nudgePing, questionPing, redact, turnPing } from './pings'
-import { advise, CI_CHECK_EVERY_MS, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseGitStatus, parsePr, QA_PROMPT, sanitizeConfig, speakable } from './rules'
+import { advise, CI_CHECK_EVERY_MS, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseFocus, parseGitStatus, parsePr, QA_PROMPT, sanitizeConfig, speakable } from './rules'
 
 const PANE = 'codebuddy'
 // The voice is casual; the thinking is not. Keep both halves of this prompt.
@@ -64,10 +64,13 @@ const writeFile = async ($: EngineInterface, status: SessionFile['status']) => {
   const home = await $.env.get('HOME')
   if (!home) return
   const [id, cwd, a, s] = await Promise.all([$.session.id(), $.session.cwd(), read($, advice), read($, signals)])
+  // In the desktop app, its own session id lets the robot open this session instead of importing a copy.
+  const host = await $.env.get('CLAUDE_CODE_HOST_SESSION_ID')
+  const appId = host && /^local_[A-Za-z0-9-]{1,64}$/.test(host) ? host : undefined
   const file: SessionFile = {
     id, cwd, project: cwd.split('/').pop() ?? cwd, branch: s.branch, status,
     mood: status === 'busy' ? 'busy' : (a?.mood ?? 'calm'),
-    steps: a?.steps ?? [], updatedAt: Date.now(), quiet: cfg.quiet === true, celebrate: s.celebrate,
+    steps: a?.steps ?? [], updatedAt: Date.now(), quiet: cfg.quiet === true, celebrate: s.celebrate, appId,
   }
   await $.fs.write(`${home}/.claude/codebuddy/sessions/${id}.json`, JSON.stringify(file, null, 2))
 }
@@ -180,6 +183,20 @@ const push = async ($: EngineInterface, message: string, force = false) => {
   return said
 }
 
+/**
+ * macOS keeps the active Focus in a file only apps with Full Disk Access can read. Claude Code can; the desktop
+ * robot can't. So the mod relays it: every 30 s it writes {on, mode, at} for the robot, which treats anything
+ * older than 2 min as stale. A failed read writes nothing, so it never claims "off" it can't see.
+ */
+const syncFocus = async ($: EngineInterface) => {
+  const home = await $.env.get('HOME')
+  if (!home) return
+  let raw: string
+  try { raw = await $.fs.read(`${home}/Library/DoNotDisturb/DB/Assertions.json`) } catch { return }
+  const mode = parseFocus(raw)
+  await $.fs.write(`${home}/.claude/codebuddy/focus-state.json`, JSON.stringify({ on: mode !== null, mode, at: Date.now() })).catch(() => {})
+}
+
 /** `/lavi doctor`: checks every moving part and says what's working. */
 async function doctor($: EngineInterface) {
   const ok = (b: boolean) => (b ? '✓' : '✗')
@@ -256,6 +273,8 @@ export const register: Register = on => {
     // The desktop robot's "Full QA + security pass" menu reads the same prompt the band uses.
     const home = await $.env.get('HOME')
     if (home) await $.fs.write(`${home}/.claude/codebuddy/qa-prompt.txt`, QA_PROMPT).catch(() => {})
+    await syncFocus($)
+    $.clock.every(30_000, () => void syncFocus($).catch(() => {}))
     await refresh($)
     return started
   })

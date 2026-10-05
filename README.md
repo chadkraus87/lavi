@@ -101,7 +101,7 @@ Each piece of advice offers 2–3 prompts, for example *run all tests*, *just wh
 
 **Morning check-in.** On the first greeting each day, Lavi sweeps your projects folder and shows which repos have uncommitted or unpushed work. Each one in his menu opens a new Claude session in that folder.
 
-**He stays quiet** when muted, in quiet hours (10pm–8am by default), during calendar events (optional), while a Focus mode is on (optional, see [Focus modes](#focus-modes)), in repos marked quiet, and never more often than every 20 seconds. Clicking him still works in quiet hours. Muting him (Settings → *Lavi talks*) silences everything.
+**He stays quiet** when muted, in quiet hours (10pm–8am by default), during calendar events (optional), while a Focus mode is on (automatic, see [Focus modes](#focus-modes)), in repos marked quiet, and never more often than every 20 seconds. Clicking him still works in quiet hours. Muting him (Settings → *Lavi talks*) silences everything.
 
 **Read answers aloud (optional).** 🔊 *read it to me* under an Ask Lavi answer speaks it live in his voice through ElevenLabs. That takes your own API key and costs about 1 credit per character, capped at 600 characters per answer.
 
@@ -193,7 +193,9 @@ A `.lavi.json` arrives with whatever you clone, so Lavi treats it as untrusted a
 
 ### Focus modes
 
-macOS doesn't tell apps when a Focus is on, so Lavi watches a marker file instead. Create two Shortcuts personal automations: Shortcuts → Automation → **+** → Focus.
+Focus quiet works with no setup. macOS records the active Focus in `~/Library/DoNotDisturb/DB/Assertions.json`, which only apps with Full Disk Access can read. Claude Code can, so the Lavi mod checks it every 30 seconds and relays it to the robot (a relay older than 2 min is ignored). Lavi never needs Full Disk Access himself.
+
+**Scheduled Focus modes** may not show up in that file. If one doesn't silence Lavi, add a Shortcuts automation for it (Shortcuts → Automation → **+** → Focus):
 
 - **When turning on** → *Run Shell Script*: `mkdir -p ~/.claude/codebuddy && touch ~/.claude/codebuddy/focus-on`
 - **When turning off** → *Run Shell Script*: `rm -f ~/.claude/codebuddy/focus-on`
@@ -209,9 +211,10 @@ Settings has copy buttons for both commands.
   - read-aloud text, sent to ElevenLabs, only when you press the button
 
   Nothing else.
+- **What Lavi reads:** your session's git state, your own Claude transcripts' first lines (for the session menu), your calendar (counts and times only, when calendar quiet is on), and which Focus is on. All of it stays on your Mac.
 - **What's stored:** small session files, your last read-aloud request and a status line, all in `~/.claude/codebuddy` (locked to your account, `0700`). Old session files are cleaned up after 7 days. Your ElevenLabs key is kept only in your login Keychain.
 - **Hardening:**
-  - session ids are validated before anything touches a shell
+  - session ids are validated before anything touches a shell or a link (desktop sessions open directly by their app id instead of being re-imported)
   - git runs with `core.fsmonitor=false`, because a repo's local config could otherwise make `git status` run a program
   - `.lavi.json` is sanitized
   - ping text is redacted
