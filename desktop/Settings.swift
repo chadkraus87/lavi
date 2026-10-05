@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State var startAtLogin = FileManager.default.fileExists(atPath: launchAgent.path)
     @State var apiKey = ""
     @State var keySaved = Keychain.get() != nil
+    @State var keyNote = ""
     @State var calendarNote = ""
 
     var body: some View {
@@ -29,8 +30,17 @@ struct SettingsView: View {
                 HStack {
                     SecureField(keySaved ? "saved in Keychain ✓ (paste to replace)" : "ElevenLabs API key", text: $apiKey)
                     Button("Save") { keySaved = Keychain.set(apiKey) && !apiKey.isEmpty; apiKey = "" }
+                    // One click: whatever's on the clipboard goes straight to the Keychain, then the clipboard is cleared.
+                    Button("Paste & Save") {
+                        if let clip = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines), !clip.isEmpty {
+                            keySaved = Keychain.set(clip)
+                            if keySaved { NSPasteboard.general.clearContents() }
+                            keyNote = keySaved ? "saved, and cleared from your clipboard." : "couldn't save to the Keychain."
+                        } else { keyNote = "your clipboard is empty. copy the key from ElevenLabs first." }
+                    }
                     if keySaved { Button("Remove") { Keychain.set(""); keySaved = false } }
                 }
+                if !keyNote.isEmpty { Text(keyNote).font(.caption).foregroundStyle(.secondary) }
             }
             Section("Voice") {
                 Toggle("Lavi talks", isOn: $voiceOn)

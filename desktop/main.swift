@@ -430,6 +430,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.clampOnScreen() }
         // Settings window edits land in UserDefaults; apply size and hotkey changes live.
         NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.applySettings() }
+        installEditMenu()
         Hotkey.onPress = { [weak self] in self?.showMenu(at: nil) }
         applySettings()
         // `open ~/Applications/CodeBuddy.app --args --settings` opens Settings straight away.
@@ -495,6 +496,26 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isFirstTick = false
         ticks += 1
         if ticks % 1800 == 0 { pruneSessions() } // hourly
+    }
+
+    /// Lavi has no menu bar (he's a background app), and without an Edit menu macOS never routes
+    /// ⌘C/⌘V/⌘X/⌘A to text fields, so pasting into Settings silently did nothing. This hidden menu fixes that.
+    func installEditMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem(); main.addItem(appItem)
+        let appMenu = NSMenu(); appMenu.addItem(withTitle: "Quit Lavi", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        let editItem = NSMenuItem(); main.addItem(editItem)
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        NSApp.mainMenu = main
     }
 
     /// Pull Lavi back onto a visible screen (after a monitor change, a resize, or a wild drag).
