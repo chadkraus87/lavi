@@ -223,6 +223,11 @@ async function onCommand($: EngineInterface, e: { args: string }) {
   }
   if (cmd === 'pings') return { text: `pings are ${(await pingsOn($)) ? 'on' : 'off'}. use /lavi pings on, off or test.` }
   if (cmd === 'doctor') return { text: await doctor($) }
+  if (cmd === 'settings') {
+    const home = await $.env.get('HOME')
+    if (home) await $.fs.write(`${home}/.claude/codebuddy/open-settings`, '')
+    return { text: "opening lavi's settings on your desktop." }
+  }
   if (cmd === 'qa') { await useSnippet($, QA_PROMPT, 'terminal'); return { text: 'the QA + security prompt is in your message box. hit enter when ready.' } }
   if (cmd === 'handoff') { await draftHandoff($, 'terminal'); return { text: 'handoff draft is in your message box. review it, then hit enter.' } }
   await refresh($)
@@ -237,7 +242,7 @@ export const register: Register = on => {
     for (const name of ['lavi', 'buddy'])
       await $.command.register({
         name,
-        description: 'Lavi, your coding buddy. Opens the pane; `next` advice · `qa` full QA+security pass · `handoff` · `doctor` · `pings on|off|test`.',
+        description: 'Lavi, your coding buddy. Opens the pane; `next` advice · `qa` full QA+security pass · `handoff` · `doctor` · `settings` · `pings on|off|test`.',
       })
     const started = await next(e)
     // The desktop robot's "Full QA + security pass" menu reads the same prompt the band uses.

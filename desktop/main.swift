@@ -20,6 +20,7 @@ let idleSets: [String: [NSImage]] = {
 let idleFPS = 8.0 // frames were sampled at 8 fps from the clip
 let sayFile = home.appendingPathComponent(".claude/codebuddy/say.json")
 let qaFile = home.appendingPathComponent(".claude/codebuddy/qa-prompt.txt")
+let openSettingsFile = home.appendingPathComponent(".claude/codebuddy/open-settings")
 let sleepyAfter: Double = 30 * 60 * 1000 // ms with no activity before the robot dozes off
 
 /// Mood art bundled in Contents/Resources (built from desktop/art). Missing art falls back to the drawn blob.
@@ -484,6 +485,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         lastMood = key
         if Date() < celebrateUntil { view.mood = "happy" }
+        // `/lavi settings` (or touching this file) opens the Settings window in the running Lavi.
+        if FileManager.default.fileExists(atPath: openSettingsFile.path) {
+            try? FileManager.default.removeItem(at: openSettingsFile)
+            SettingsWindow.show()
+        }
         if panel.isVisible { speakIfSomethingChanged(); breakNudge(); readAloudIfAsked() }
         if isFirstTick && panel.isVisible { _ = morningCheckIn() }
         isFirstTick = false
