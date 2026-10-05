@@ -126,10 +126,11 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
     }
 
     /// Says a line. `byYou` (a click) skips quiet hours and the spacing rule, never mute.
+    /// `skipGap` skips only the spacing rule (a greeting right after a goodbye on relaunch).
     @discardableResult
-    func say(_ id: String, byYou: Bool = false) -> TimeInterval? {
+    func say(_ id: String, byYou: Bool = false, skipGap: Bool = false) -> TimeInterval? {
         guard isOn else { return nil }
-        if !byYou && (isQuietHour || Date().timeIntervalSince(lastSpoke) < minGap) { return nil }
+        if !byYou && (isQuietHour || (!skipGap && Date().timeIntervalSince(lastSpoke) < minGap)) { return nil }
         guard let url = files(for: id).randomElement(), let p = try? AVAudioPlayer(contentsOf: url) else { return nil }
         player?.stop()
         p.volume = volume
@@ -245,32 +246,102 @@ final class BuddyView: NSView {
     }
 }
 
-final class Bubble: NSPanel {
-    let label = NSTextField(wrappingLabelWithString: "")
-    init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 260, height: 60), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        isOpaque = false; backgroundColor = .clear; level = .floating; hasShadow = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]; ignoresMouseEvents = true
-        let box = NSVisualEffectView(); box.material = .popover; box.state = .active
-        box.wantsLayer = true; box.layer?.cornerRadius = 12
-        label.font = .systemFont(ofSize: 13); label.maximumNumberOfLines = 4
-        label.translatesAutoresizingMaskIntoConstraints = false
-        box.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
-            label.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
-            label.topAnchor.constraint(equalTo: box.topAnchor, constant: 8),
-            label.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -8),
-            label.widthAnchor.constraint(lessThanOrEqualToConstant: 236),
-        ])
-        contentView = box
+/// Lavi's speech bubble: a cartoon callout with a bold outline and a tail pointing at Lavi.
+final class BubbleView: NSView {
+    var headline = NSAttributedString(), detail: NSAttributedString?
+    var tailOnRight = true
+    static let ink = NSColor(srgbRed: 0.17, green: 0.13, blue: 0.27, alpha: 1) // Lavi's charcoal-purple
+    static let pad = NSSize(width: 18, height: 14), tail: CGFloat = 22, margin: CGFloat = 10, maxText: CGFloat = 300
+
+    static func rounded(_ size: CGFloat, _ weight: NSFont.Weight) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size, weight: weight)
+        return base.fontDescriptor.withDesign(.rounded).flatMap { NSFont(descriptor: $0, size: size) } ?? base
     }
-    func show(_ text: String, near f: NSRect) {
-        label.stringValue = text
-        let fit = contentView!.fittingSize
-        let x = f.minX - fit.width - 6 > (screen?.visibleFrame.minX ?? 0) ? f.minX - fit.width - 6 : f.maxX + 6
-        setFrame(NSRect(x: x, y: f.midY - fit.height / 2, width: fit.width, height: fit.height), display: true)
-        orderFront(nil)
+
+    func textRects() -> (NSRect, NSRect?) {
+        let opts: NSString.DrawingOptions = [.usesLineFragmentOrigin, .usesFontLeading]
+        let h = headline.boundingRect(with: NSSize(width: Self.maxText, height: 1000), options: opts).integral
+        let d = detail?.boundingRect(with: NSSize(width: Self.maxText, height: 1000), options: opts).integral
+        return (h, d)
+    }
+
+    /// Window size needed for the current text.
+    func fittingSize() -> NSSize {
+        let (h, d) = textRects()
+        let w = max(h.width, d?.width ?? 0) + Self.pad.width * 2
+        let tH = h.height + (d.map { $0.height + 4 } ?? 0) + Self.pad.height * 2
+        return NSSize(width: w + Self.tail + Self.margin * 2, height: max(tH, 52) + Self.margin * 2)
+    }
+
+    override func draw(_ dirty: NSRect) {
+        let body = NSRect(x: Self.margin + (tailOnRight ? 0 : Self.tail), y: Self.margin,
+                          width: bounds.width - Self.margin * 2 - Self.tail, height: bounds.height - Self.margin * 2)
+        let bubble = NSBezierPath(roundedRect: body, xRadius: 18, yRadius: 18)
+        // The tail: a wide curved wedge whose base sits inside the body, so the two read as one shape.
+        let ty = body.minY + body.height * 0.4
+        let dir: CGFloat = tailOnRight ? 1 : -1
+        let edge = tailOnRight ? body.maxX : body.minX
+        let tail = NSBezierPath()
+        tail.move(to: NSPoint(x: edge - dir * 14, y: ty + 13))
+        tail.curve(to: NSPoint(x: edge + dir * Self.tail, y: ty - 12),
+                   controlPoint1: NSPoint(x: edge + dir * 4, y: ty + 10), controlPoint2: NSPoint(x: edge + dir * 12, y: ty - 2))
+        tail.curve(to: NSPoint(x: edge - dir * 14, y: ty - 8),
+                   controlPoint1: NSPoint(x: edge + dir * 6, y: ty - 10), controlPoint2: NSPoint(x: edge - dir * 2, y: ty - 9))
+        tail.close()
+        let shapes = [bubble, tail]
+
+        // 1. soft drop shadow under the whole silhouette
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+        shadow.shadowOffset = NSSize(width: 0, height: -3)
+        shadow.shadowBlurRadius = 7
+        shadow.set()
+        NSColor.white.setFill(); shapes.forEach { $0.fill() }
+        NSGraphicsContext.restoreGraphicsState()
+        // 2. a double-width stroke on both shapes, then 3. a white fill over both: what's left is a
+        //    3pt outline around the union only, with no seam where the tail joins.
+        Self.ink.setStroke()
+        for p in shapes { p.lineWidth = 6; p.lineJoinStyle = .round; p.stroke() }
+        NSColor.white.setFill(); shapes.forEach { $0.fill() }
+
+        let (h, d) = textRects()
+        let x = body.minX + Self.pad.width
+        var y = body.maxY - Self.pad.height - h.height
+        if d == nil { y = body.midY - h.height / 2 }
+        headline.draw(with: NSRect(x: x, y: y, width: Self.maxText, height: h.height), options: [.usesLineFragmentOrigin, .usesFontLeading])
+        if let detail, let d { detail.draw(with: NSRect(x: x, y: y - 4 - d.height, width: Self.maxText, height: d.height), options: [.usesLineFragmentOrigin, .usesFontLeading]) }
+    }
+}
+
+final class Bubble: NSPanel {
+    let bubbleView = BubbleView()
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 300, height: 90), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        isOpaque = false; backgroundColor = .clear; level = .floating; hasShadow = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]; ignoresMouseEvents = true
+        contentView = bubbleView
+    }
+
+    /// `text` is the bold headline; `detail` is the smaller line under it.
+    func show(_ text: String, detail: String? = nil, near f: NSRect) {
+        let para = NSMutableParagraphStyle(); para.lineSpacing = 1
+        bubbleView.headline = NSAttributedString(string: text, attributes: [
+            .font: BubbleView.rounded(16, .semibold), .foregroundColor: BubbleView.ink, .paragraphStyle: para])
+        bubbleView.detail = detail.map { NSAttributedString(string: $0, attributes: [
+            .font: BubbleView.rounded(13, .regular), .foregroundColor: BubbleView.ink.withAlphaComponent(0.72), .paragraphStyle: para]) }
+        let sz = bubbleView.fittingSize()
+        let minX = screen?.visibleFrame.minX ?? NSScreen.main?.visibleFrame.minX ?? 0
+        bubbleView.tailOnRight = f.minX - sz.width + 4 > minX // sit left of Lavi when there's room
+        let x = bubbleView.tailOnRight ? f.minX - sz.width + 4 : f.maxX - 4
+        let y = f.minY + f.height * 0.6 - (sz.height - BubbleView.margin * 2) * 0.4 - BubbleView.margin + 12 // tail tip lands near Lavi's face
+        setFrame(NSRect(x: x, y: y, width: sz.width, height: sz.height), display: true)
+        bubbleView.needsDisplay = true
+        if !isVisible {
+            alphaValue = 0
+            orderFront(nil)
+            NSAnimationContext.runAnimationGroup { $0.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15; animator().alphaValue = 1 }
+        }
     }
 }
 
@@ -303,7 +374,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         view.onHover = { [weak self] inside in
             guard let self else { return }
             if inside, let s = self.sessions.first, let step = s.steps.first {
-                self.bubble.show("\(s.project): \(step.text)\n\(step.why)", near: self.panel.frame)
+                self.bubble.show(step.text, detail: "\(s.project) · \(step.why)", near: self.panel.frame)
             } else { self.bubble.orderOut(nil) }
         }
         tick()
@@ -312,6 +383,17 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             RunLoop.main.add(Timer(timeInterval: interval, repeats: true) { _ in f() }, forMode: .common)
         }
         voice.onFinish = { [weak self] in self?.view.mouth = nil; self?.view.needsDisplay = true }
+        // Hello again: Claude.app (re)opened. Show up right away and greet, with a bubble too.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self, (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier == claudeBundleID else { return }
+            self.tick()
+            guard self.panel.isVisible else { return } // hidden for an hour, etc.
+            self.lastGreeting = Date() // so a new session file doesn't greet twice
+            if self.voice.say("greeting", skipGap: true) != nil {
+                self.bubble.show("hey, welcome back!", detail: "lavi here. click me any time for what's next.", near: self.panel.frame)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.bubble.orderOut(nil) }
+            }
+        }
         // Goodbye: macOS can't delay another app's quit, so Lavi says it as Claude closes and lingers for the clip.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             guard let self, (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier == claudeBundleID,
@@ -332,7 +414,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Speak up briefly when the advice changes.
         let key = "\(s?.id ?? "")|\(s?.steps.first?.text ?? "")"
         if !lastMood.isEmpty, key != lastMood, let s, s.status == "idle", let step = s.steps.first, panel.isVisible {
-            bubble.show("\(s.project): \(step.text)", near: panel.frame)
+            bubble.show(step.text, detail: s.project, near: panel.frame)
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.bubble.orderOut(nil) }
         }
         lastMood = key
@@ -507,7 +589,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let text = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        bubble.show("copied! paste it into Claude (⌘V), tweak it, then hit enter.", near: panel.frame)
+        bubble.show("copied!", detail: "paste it into Claude (⌘V), tweak it, then hit enter.", near: panel.frame)
         voice.say("copied", byYou: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.bubble.orderOut(nil) }
     }

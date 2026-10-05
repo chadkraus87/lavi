@@ -59,10 +59,11 @@ Lavi talks in a chill-friend voice designed in ElevenLabs. The voice is saved as
 | the advice changes | that advice's line |
 | a 3+ min task finishes while you're at the Mac | "done with that big one. come take a look." |
 | a session opens | a greeting (at most every 10 min) |
+| the Claude app opens again | "hey, welcome back!" greeting with a bubble (skips the 20 s spacing so it isn't swallowed by the goodbye) |
 | the Claude app quits | a goodbye. Lavi stays on screen until it finishes, then hides |
 | you copy a prompt from the menu | "copied. paste it in and hit enter." |
 
-While Lavi talks, its screen-mouth moves with the loudness of the audio.
+While Lavi talks, its screen-mouth moves with the loudness of the audio. Text appears in a cartoon speech bubble (bold headline, smaller detail line, tail pointing at Lavi) that flips to Lavi's other side when there's no room.
 
 **Quiet rules:** at most one line every 20 s, except when you click. Silent in quiet hours (10pm–8am), unless you click. Menu → **Voice** has *Lavi talks* (on/off), Volume low/medium/high, and *Quiet 10pm–8am*.
 
