@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { Advice, Answer, LaviConfig, Pings, SessionFile, Signals } from '../types'
-import { approvalPing, canPush, NO_PINGS, NUDGE_AFTER_MS, nudgePing, questionPing, turnPing } from './pings'
-import { advise, CI_CHECK_EVERY_MS, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseGitStatus, parsePr, QA_PROMPT, speakable } from './rules'
+import { approvalPing, canPush, NO_PINGS, NUDGE_AFTER_MS, nudgePing, questionPing, redact, turnPing } from './pings'
+import { advise, CI_CHECK_EVERY_MS, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseGitStatus, parsePr, QA_PROMPT, sanitizeConfig, speakable } from './rules'
 
 const PANE = 'codebuddy'
 // The voice is casual; the thinking is not. Keep both halves of this prompt.
@@ -35,7 +35,8 @@ const pings = atom({ plugin: 'codebuddy', key: 'pings' } as const, NO_PINGS as P
 
 const git = async ($: EngineInterface, ...args: string[]) => {
   try {
-    const r = await $.process.run(['git', ...args], { timeoutMs: 5000 })
+    // core.fsmonitor off: a repo's local config can point it at any program, and git status would run it.
+    const r = await $.process.run(['git', '-c', 'core.fsmonitor=false', ...args], { timeoutMs: 5000 })
     return r.exitCode === 0 ? r.stdout.trim() : null
   } catch {
     return null
@@ -47,8 +48,7 @@ let cfg: LaviConfig = {} // ponytail: re-read every refresh; cheap, and edits to
 /** A repo's optional .lavi.json (quiet, testCommand, thresholds). */
 const loadConfig = async ($: EngineInterface): Promise<LaviConfig> => {
   try {
-    const c = JSON.parse(await $.fs.read(`${await $.session.cwd()}/.lavi.json`))
-    return c && typeof c === 'object' ? c : {}
+    return sanitizeConfig(JSON.parse(await $.fs.read(`${await $.session.cwd()}/.lavi.json`)))
   } catch {
     return {}
   }
@@ -112,11 +112,18 @@ const refresh = async ($: EngineInterface) => {
 
 const ask = async ($: EngineInterface) => {
   await update($, isAsking, () => true)
-  const r = await $.model.fork({ prompt: ASK })
-  const a = r.isAnswered ? parseAnswer(r.text) : { text: `couldn't think that through right now (${r.reason}). try again in a sec?`, snippets: [] }
-  await update($, answer, () => a)
-  await update($, isAsking, () => false)
-  return a
+  try {
+    const r = await $.model.fork({ prompt: ASK })
+    const a: Answer = r.isAnswered ? parseAnswer(r.text) : { text: `couldn't think that through right now (${r.reason}). try again in a sec?`, snippets: [] }
+    await update($, answer, () => a)
+    return a
+  } catch {
+    const a: Answer = { text: "couldn't ask the model right now. try again in a sec?", snippets: [] }
+    await update($, answer, () => a)
+    return a
+  } finally {
+    await update($, isAsking, () => false) // never leave the pane stuck on "thinking…"
+  }
 }
 
 /**
@@ -165,7 +172,7 @@ const pingsOn = async ($: EngineInterface) => (await $.store.get('pingsOn')) !==
 const push = async ($: EngineInterface, message: string, force = false) => {
   const now = Date.now()
   if (!force && (cfg.quiet || !canPush(await read($, pings), now, await pingsOn($)))) return 'held back (spam guard, pings off, or a quiet repo)'
-  const r = await $.tool.call({ tool: 'PushNotification', message: `lavi: ${message}`, status: 'proactive' })
+  const r = await $.tool.call({ tool: 'PushNotification', message: `lavi: ${redact(message)}`, status: 'proactive' })
   const said = r.deny ? `refused: ${r.deny}` : (r.text ?? 'sent')
   $.ui.log(`codebuddy ping: ${said}`, { to: 'debug' })
   if (!r.deny && !r.isError) await update($, pings, p => ({ ...p, lastPushAt: now }))
@@ -268,16 +275,18 @@ export const register: Register = on => {
       const q = (e as { questions?: { question?: string }[] }).questions?.[0]?.question
       if (q && !(await read($, pings)).waitingPushed) {
         await update($, pings, p => ({ ...p, waitingPushed: true }))
-        void push($, questionPing(await project($), q))
+        void push($, questionPing(await project($), q)).catch(() => {})
       }
     }
     const ran = await next(e)
     if (ran.deny) return ran
+    // A command sent to the background hasn't finished yet: its result says nothing about pass/fail.
+    const background = (e as { run_in_background?: boolean }).run_in_background === true
     if ((e.tool === 'Edit' || e.tool === 'Write') && isCodeFile(String(e.file_path))) {
       await update($, signals, s => ({ ...s, editsSinceTest: s.editsSinceTest + 1 }))
     } else if (e.tool === 'NotebookEdit') {
       await update($, signals, s => ({ ...s, editsSinceTest: s.editsSinceTest + 1 }))
-    } else if (e.tool === 'Bash' && isTestCommand(String(e.command))) {
+    } else if (e.tool === 'Bash' && !background && isTestCommand(String(e.command))) {
       const lastTest = ran.isError ? 'fail' : 'pass'
       await update($, signals, (s): Signals => ({
         ...s, editsSinceTest: 0, lastTest,
@@ -285,10 +294,10 @@ export const register: Register = on => {
         celebrate: s.lastTest === 'fail' && lastTest === 'pass' ? { kind: 'tests', at: Date.now() } : s.celebrate,
       }))
       if (lastTest === 'fail') await update($, pings, p => ({ ...p, turnFailed: true }))
-    } else if (e.tool === 'Bash' && isLintCommand(String(e.command))) {
+    } else if (e.tool === 'Bash' && !background && isLintCommand(String(e.command))) {
       const lastLint = ran.isError ? 'fail' : 'pass'
       await update($, signals, (s): Signals => ({ ...s, lastLint }))
-    } else if (e.tool === 'Bash' && isPushCommand(String(e.command)) && !ran.isError) {
+    } else if (e.tool === 'Bash' && !background && isPushCommand(String(e.command)) && !ran.isError) {
       await update($, signals, (s): Signals => ({ ...s, celebrate: { kind: 'push', at: Date.now() }, ciCheckedAt: 0 }))
     }
     return ran
@@ -299,7 +308,7 @@ export const register: Register = on => {
     const verdict = await next(e)
     if (verdict.decision === 'ask' && e.tool !== 'AskUserQuestion' && !(await read($, pings)).waitingPushed) {
       await update($, pings, p => ({ ...p, waitingPushed: true }))
-      void push($, approvalPing(await project($), e.tool, e.input))
+      void push($, approvalPing(await project($), e.tool, e.input)).catch(() => {})
     }
     return verdict
   })

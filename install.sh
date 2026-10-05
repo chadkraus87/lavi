@@ -11,9 +11,12 @@ MOD="$ROOT/mod"
 
 # Adds (or with "remove", drops) the mod folder in env.CLAUDE_CODE_PLUGIN_DIRS, keeping other entries.
 plugin_dirs() {
-  cp "$SETTINGS" "$SETTINGS.codebuddy-backup"
+  mkdir -p "$(dirname "$SETTINGS")"
+  [[ -f "$SETTINGS" ]] || echo '{}' > "$SETTINGS"
+  # Keep the first backup (your settings before CodeBuddy ever touched them); later runs don't overwrite it.
+  [[ -f "$SETTINGS.codebuddy-backup" ]] || cp "$SETTINGS" "$SETTINGS.codebuddy-backup"
   python3 - "$SETTINGS" "$MOD" "$1" <<'PY'
-import json, sys
+import json, os, sys, tempfile
 path, mod, mode = sys.argv[1:]
 s = json.load(open(path))
 env = s.setdefault("env", {})
@@ -23,14 +26,21 @@ before = s["env"].get("CLAUDE_CODE_PLUGIN_DIRS")
 if dirs: env["CLAUDE_CODE_PLUGIN_DIRS"] = ":".join(dirs)
 else: env.pop("CLAUDE_CODE_PLUGIN_DIRS", None)
 print(f"CLAUDE_CODE_PLUGIN_DIRS: {before!r} -> {env.get('CLAUDE_CODE_PLUGIN_DIRS')!r}")
-json.dump(s, open(path, "w"), indent=2); open(path, "a").write("\n")
+# Write a temp file and swap it in, so a crash mid-write can't leave settings.json truncated.
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".settings.")
+with os.fdopen(fd, "w") as f:
+    json.dump(s, f, indent=2); f.write("\n")
+os.chmod(tmp, os.stat(path).st_mode & 0o777)
+os.replace(tmp, path)
 PY
 }
 
 if [[ "${1:-}" == "--uninstall" ]]; then
   launchctl bootout "gui/$UID/com.chadkraus.codebuddy" 2>/dev/null || true
-  rm -rf "$APP" "$AGENT"
+  rm -rf "$APP" "$AGENT" "$AGENT.disabled"
   plugin_dirs remove
+  # The ElevenLabs key you saved in Settings lives in your login Keychain: don't leave it behind.
+  security delete-generic-password -s com.chadkraus.codebuddy.elevenlabs >/dev/null 2>&1 && echo "Removed the ElevenLabs key from your Keychain." || true
   echo "Uninstalled. Session files remain in ~/.claude/codebuddy (delete if you like)."
   exit 0
 fi

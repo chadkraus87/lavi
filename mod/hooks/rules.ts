@@ -10,9 +10,42 @@ const TEST_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\bvitest\b|\bjest\b|\bp
 const LINT_RE = /\btsc\b|\beslint\b|\bbiome\s+(check|lint)\b|\bruff\b|\bmypy\b|\bpyright\b|\bswiftlint\b|\bcargo clippy\b|\bgo vet\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?(lint|typecheck|type-check)\b/
 const CODE_RE = /\.(tsx?|jsx?|mjs|cjs|py|go|rs|swift|rb|java|kt|cs|c|cc|cpp|h|php|vue|svelte|astro)$/
 
-export const isTestCommand = (cmd: string) => TEST_RE.test(cmd)
-export const isLintCommand = (cmd: string) => LINT_RE.test(cmd)
-export const isPushCommand = (cmd: string) => /\bgit\s+push\b/.test(cmd)
+/**
+ * The commands a shell line actually runs: each `&&`/`||`/`;`/`|` segment, minus leading
+ * `VAR=x` assignments and runner wrappers (npx, uv run, python -m…). Matching only these keeps
+ * `grep -r jest src` or `git commit -m "add vitest"` from counting as a test run.
+ */
+export function commandHeads(cmd: string): string[] {
+  const wrapper = /^(?:\w+=\S*\s+|(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn\s+dlx|uv\s+run|poetry\s+run|pipenv\s+run|python3?\s+-m|time|timeout\s+\S+|env)\s+)/
+  return cmd.split(/&&|\|\||;|\||\n/).map(seg => {
+    let h = seg.trim().replace(/^\(+/, '')
+    for (let prev = ''; prev !== h; ) { prev = h; h = h.replace(wrapper, '') }
+    return h
+  }).filter(Boolean)
+}
+const runs = (re: RegExp) => (cmd: string) => commandHeads(cmd).some(h => re.test(h))
+export const isTestCommand = runs(new RegExp(`^(?:${TEST_RE.source})`))
+export const isLintCommand = runs(new RegExp(`^(?:${LINT_RE.source})`))
+export const isPushCommand = runs(/^git\s+push\b/)
+
+/**
+ * A repo's .lavi.json is untrusted (it comes with whatever you clone): keep only well-formed
+ * values, so a hostile repo can't smuggle text into the prompts Lavi offers you to send.
+ */
+export function sanitizeConfig(raw: unknown): LaviConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const r = raw as Record<string, unknown>
+  const cfg: LaviConfig = {}
+  if (typeof r.quiet === 'boolean') cfg.quiet = r.quiet
+  // A plain command line: letters, digits, spaces and . / : @ = + - _ only. No quotes, backticks, $, ; or newlines.
+  if (typeof r.testCommand === 'string' && /^[\w ./:@=+-]{1,80}$/.test(r.testCommand.trim())) cfg.testCommand = r.testCommand.trim()
+  const num = (v: unknown, min: number, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max ? v : undefined)
+  const d = num(r.maxDirtyFiles, 1, 10_000), m = num(r.maxMinutesSinceCommit, 1, 7 * 24 * 60), w = num(r.contextWrapPercent, 10, 100)
+  if (d !== undefined) cfg.maxDirtyFiles = d
+  if (m !== undefined) cfg.maxMinutesSinceCommit = m
+  if (w !== undefined) cfg.contextWrapPercent = w
+  return cfg
+}
 export const isCodeFile = (path: string) => CODE_RE.test(path)
 
 /** The one-click deep check: a full QA pass and security audit, fixing as it goes, ending in a report. */
@@ -189,7 +222,8 @@ export function parseAnswer(reply: string): Answer {
     if (!m) { keep.push(line); continue }
     const [label, ...rest] = m[1]!.split('|')
     const text = rest.join('|').trim() || label!.trim()
-    snippets.push({ label: rest.length ? label!.trim() : text.split(/\s+/).slice(0, 3).join(' '), text })
+    const name = rest.length ? label!.trim() : text.split(/\s+/).slice(0, 3).join(' ')
+    snippets.push({ label: name.length > 28 ? name.slice(0, 27) + '…' : name, text: text.slice(0, 2000) })
   }
   return { text: keep.join('\n').trim(), snippets: snippets.slice(0, 4) }
 }

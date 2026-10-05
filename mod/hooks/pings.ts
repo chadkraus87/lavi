@@ -16,6 +16,18 @@ const clip = (s: string, n = MAX_LEN) => {
 }
 const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
 
+/**
+ * Pings can land on a lock screen, so scrub anything that looks like a credential first:
+ * known token shapes, `Bearer …`, `password=…`-style pairs, and long opaque strings.
+ */
+export function redact(text: string) {
+  return text
+    .replace(/\b(sk|pk|rk|xi|ghp|gho|ghs|ghu|github_pat|xox[abprs]|glpat|AKIA|ASIA)[-_A-Za-z0-9]{8,}/g, '•••')
+    .replace(/\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 •••')
+    .replace(/\b(api[_-]?key|token|secret|password|passwd|pwd|auth)(["']?\s*[:=]\s*["']?)[^\s"'&]+/gi, '$1$2•••')
+    .replace(/[A-Za-z0-9+/_=-]{40,}/g, '•••')
+}
+
 export const canPush = (p: Pings, now: number, isOn: boolean) => isOn && now - p.lastPushAt >= PING_GAP_MS
 
 /** After a main-thread turn ends: something broke beats a long task finishing. */

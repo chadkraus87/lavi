@@ -7,7 +7,9 @@ enum Projects {
     private static func git(_ dir: String, _ args: [String]) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        p.arguments = ["-C", dir] + args
+        // core.fsmonitor off: this scans every folder under Projects, including ones you just downloaded,
+        // and a repo's local config can point fsmonitor at any program for git status to run.
+        p.arguments = ["-C", dir, "-c", "core.fsmonitor=false"] + args
         let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
         guard (try? p.run()) != nil else { return nil }
         let data = out.fileHandleForReading.readDataToEndOfFile()

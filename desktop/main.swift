@@ -92,6 +92,11 @@ func loadTranscripts(limit: Int = 15) -> [Transcript] {
     }
 }
 
+/// A Claude Code session id: a UUID, nothing else.
+func isSessionID(_ s: String) -> Bool {
+    s.range(of: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", options: .regularExpression) != nil
+}
+
 func isClaudeRunning() -> Bool {
     if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == claudeBundleID }) { return true }
     let p = Process()
@@ -424,6 +429,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var seenCelebrate: [String: Double] = [:]
     var celebrateUntil = Date.distantPast
     var lastSayAt: Double = 0 // newest read-aloud request already handled
+    var lastSynthesis = Date.distantPast
     var activeSince: Date? // steady work, for break nudges
     var lastBreakNudge = Date()
     var checkIn: [ProjectState] = [] // last morning check-in
@@ -436,11 +442,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.contentView = view
         let saved = UserDefaults.standard.string(forKey: "origin").map(NSPointFromString)
-        let vf = NSScreen.main!.visibleFrame
+        let vf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         panel.setFrameOrigin(saved ?? NSPoint(x: vf.maxX - size - 24, y: vf.minY + 24))
         clampOnScreen()
         view.onDragEnd = { [weak self] in self?.clampOnScreen() }
         pruneSessions()
+        // Session files and say.json (your last Ask Lavi answer) are yours alone: lock the folder to your account.
+        let dataDir = buddyDir.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: buddyDir, withIntermediateDirectories: true)
+        for d in [dataDir, buddyDir] { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: d.path) }
         // Displays changed (monitor unplugged, resolution): make sure Lavi is still somewhere you can see.
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.clampOnScreen() }
         // Settings window edits land in UserDefaults; apply size and hotkey changes live.
@@ -538,7 +548,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let f = panel.frame
         let screens = NSScreen.screens.map(\.visibleFrame)
         if !screens.contains(where: { $0.intersection(f).width > f.width * 0.6 && $0.intersection(f).height > f.height * 0.6 }) {
-            let vf = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+            guard let vf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame else { return } // no display yet
             let x = min(max(f.minX, vf.minX), vf.maxX - f.width), y = min(max(f.minY, vf.minY), vf.maxY - f.height)
             panel.setFrameOrigin(screens.contains(where: { $0.contains(NSPoint(x: f.midX, y: f.midY)) }) ? NSPoint(x: x, y: y)
                                  : NSPoint(x: vf.maxX - f.width - 24, y: vf.minY + 24))
@@ -564,9 +574,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let today = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .none)
         guard force || (Prefs.morningCheckIn && Prefs.d.string(forKey: "lastCheckInDay") != today) else { return false }
         Prefs.d.set(today, forKey: "lastCheckInDay")
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             let found = Projects.scan()
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.async {
                 guard let self else { return }
                 self.checkIn = found
                 self.voice.say("morning", byYou: force, skipGap: true)
@@ -600,6 +610,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let text = req["text"] as? String, let at = req["at"] as? Double else { return }
         guard at > lastSayAt else { return }
         lastSayAt = at
+        // Each request costs ElevenLabs credits: at most one every 5 s, whatever writes the file.
+        guard Date().timeIntervalSince(lastSynthesis) > 5 else { return }
+        lastSynthesis = Date()
         func status(_ s: String) { try? "\(Date().formatted(date: .abbreviated, time: .standard)): \(s)".write(to: readStatusFile, atomically: true, encoding: .utf8) }
         status("asked ElevenLabs (\(text.count) characters)…")
         let preview = String(text.prefix(140)) + (text.count > 140 ? "…" : "")
@@ -791,6 +804,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func sessionItem(id: String, cwd: String, title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        // Ids come from file names and session files on disk: only real session ids get resume actions,
+        // so a crafted file can't turn "Resume in Terminal" into a shell command.
+        guard isSessionID(id) else { item.isEnabled = false; return item }
         let sub = NSMenu()
         sub.addItem(action("Open in Claude app", #selector(openURL(_:)), "claude://resume?session=\(id)"))
         sub.addItem(action("Resume in Terminal", #selector(resumeInTerminal(_:)), [id, cwd]))
@@ -806,7 +822,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func resumeCommand(_ sender: NSMenuItem) -> String? {
         guard let p = sender.representedObject as? [String], p.count == 2 else { return nil }
         let quoted = "'" + p[1].replacingOccurrences(of: "'", with: "'\\''") + "'"
-        return "cd \(quoted) && claude --resume \(p[0])"
+        guard isSessionID(p[0]) else { return nil }
+        return "cd \(quoted) && claude --resume '\(p[0])'"
     }
 
     @objc func resumeInTerminal(_ sender: NSMenuItem) {
