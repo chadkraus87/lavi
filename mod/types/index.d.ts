@@ -25,7 +25,23 @@ export type Signals = {
   ciCheckedAt: number
   /** something worth a little celebration, for the desktop robot */
   celebrate: { kind: 'tests' | 'push'; at: number } | null
+  /** what's staged for commit, checked before you commit (null when nothing is) */
+  staged: Staged | null
 }
+
+/** The pre-commit check of `git diff --cached`. Only file names, never the secret itself. */
+export type Staged = {
+  files: number
+  lines: number
+  secretFiles: string[]
+  envFiles: string[]
+  codeFiles: number
+  testFiles: number
+  todos: number
+}
+
+/** Claude is blocked on you: a question it asked, or a tool it needs approval for. */
+export type Waiting = { kind: 'question' | 'approval'; since: number } | null
 
 /** A repo's optional `.lavi.json`. */
 export type LaviConfig = {
@@ -59,6 +75,8 @@ export type SessionFile = {
   celebrate?: { kind: 'tests' | 'push'; at: number } | null
   /** the Claude desktop app's own id for this session (local_…), when it runs there */
   appId?: string
+  /** set while Claude waits on your answer or approval */
+  waiting?: Waiting
 }
 
 declare module 'claude-code' {
@@ -71,6 +89,7 @@ declare module 'claude-code' {
       pings: Pings
       /** id of the advice whose band you closed; it comes back when the advice changes */
       bandHiddenFor: string | null
+      waiting: Waiting
     }
   }
 }

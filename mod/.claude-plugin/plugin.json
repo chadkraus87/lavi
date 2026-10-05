@@ -1,7 +1,7 @@
 {
   "name": "codebuddy",
-  "version": "0.1.0",
-  "description": "Coding buddy: deterministic next-step advice per session, a /buddy pane, and state for the desktop character",
+  "version": "0.2.0",
+  "description": "Lavi, a coding buddy for Claude Code: next-step advice with one-click prompts, a pre-commit safety check, a /lavi pane, phone pings, and the state the desktop robot shows",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Chad Kraus",

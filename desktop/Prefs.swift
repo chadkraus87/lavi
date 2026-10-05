@@ -15,6 +15,8 @@ enum Prefs {
     static var breakMinutes: Double { num("breakMinutes", 90) }
     static var morningCheckIn: Bool { bool("morningCheckIn", true) }
     static var hotkeyOn: Bool { bool("hotkeyOn", true) }
+    static var wrapUp: Bool { bool("wrapUp", true) }
+    static var wrapUpHour: Int { Int(num("wrapUpHour", 18)) }
     static var projectsRoot: String {
         d.string(forKey: "projectsRoot") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Development/Projects").path
     }

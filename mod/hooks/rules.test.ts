@@ -1,13 +1,13 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Signals } from '../types'
-import { advise, commandHeads, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseGitStatus, parseFocus, parsePr, QA_PROMPT, sanitizeConfig, speakable } from './rules'
+import { advise, commandHeads, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseGitStatus, parseFocus, parsePr, QA_PROMPT, sanitizeConfig, scanStaged, speakable } from './rules'
 
 const NOW = 1_800_000_000_000
 const base: Signals = {
   isGit: true, branch: 'feat', defaultBranch: 'main', dirtyFiles: 0, ahead: 0,
   lastCommitAt: NOW, lastTest: 'pass', editsSinceTest: 0, contextPercent: 10,
-  lastLint: null, behind: 0, ci: null, prNumber: null, changesRequested: false, ciCheckedAt: 0, celebrate: null,
+  lastLint: null, behind: 0, ci: null, prNumber: null, changesRequested: false, ciCheckedAt: 0, celebrate: null, staged: null,
 }
 const ids = (s: Partial<Signals>) => advise({ ...base, ...s }, NOW).steps.map(x => x.id)
 
@@ -163,4 +163,36 @@ test('reads which Focus is on from macOS', () => {
   expect(parseFocus(JSON.stringify({ data: [{}] }))).toBeNull()
   expect(parseFocus('not json')).toBeNull()
   expect(parseFocus(JSON.stringify({ data: [{ storeAssertionRecords: [{}] }] }))).toBe('focus')
+})
+
+test('the pre-commit check finds secrets, .env files, big untested changes and new TODOs', () => {
+  const key = 'AKIA' + 'ABCDEFGHIJKLMNOP' // split so this file doesn't trip scanners itself
+  const diff = [
+    '+++ b/src/config.ts', `+const aws = "${key}"`, '+// TODO: remove',
+    '+++ b/src/util.ts', '+export const x = 1',
+    '+++ b/README.md', '+the api_key setting goes in your env', // prose, not a literal: no match
+  ].join('\n')
+  const st = scanStaged('3\t0\tsrc/config.ts\n400\t20\tsrc/util.ts\n1\t0\t.env\n1\t0\t.env.example\n-\t-\tlogo.png', diff)
+  expect(st.secretFiles).toEqual(['src/config.ts'])
+  expect(st.envFiles).toEqual(['.env'])
+  expect(st.lines).toBe(425)
+  expect(st.files).toBe(5)
+  expect(st.codeFiles).toBe(2)
+  expect(st.testFiles).toBe(0)
+  expect(st.todos).toBe(1)
+  expect(scanStaged('', '').secretFiles).toEqual([])
+  expect(scanStaged('5\t0\tsrc/a.test.ts', '+++ b/src/a.test.ts\n+password = "hunter2hunter2"').secretFiles).toEqual(['src/a.test.ts'])
+})
+
+test('pre-commit advice: secret first, never the secret itself, file names cleaned', () => {
+  const staged = { files: 2, lines: 420, secretFiles: ['src/config.ts'], envFiles: [], codeFiles: 2, testFiles: 0, todos: 2 }
+  const a = advise({ ...base, staged, lastTest: 'fail', dirtyFiles: 2 }, NOW)
+  expect(a.steps.map(s => s.id)).toEqual(['secret', 'fix-tests', 'untested', 'todos'])
+  expect(a.mood).toBe('worried')
+  expect(a.steps[0]!.why).toContain('config.ts')
+  expect(ids({ staged: { ...staged, secretFiles: [], lines: 10, todos: 0 } })).toEqual(['next'])
+  expect(ids({ staged: { ...staged, secretFiles: [], testFiles: 1, todos: 0 } })).toEqual(['next'])
+  expect(advise({ ...base, staged: { ...staged, secretFiles: [], envFiles: ['.env.local'] } }, NOW).steps[0]!.why).toContain('.env.local is staged')
+  const hostile = scanStaged('1\t0\tsrc/a`$(rm -rf ~)`.ts', '+++ b/src/a`$(rm -rf ~)`.ts\n+token = "abcdefghijklmnop"')
+  expect(hostile.secretFiles[0]).not.toMatch(/[`$()]/)
 })

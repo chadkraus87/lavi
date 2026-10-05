@@ -25,5 +25,11 @@
   "advice-fix-ci": "CI is red on this branch. let's see what broke.",
   "advice-fix-lint": "types or lint are broken. quick cleanup?",
   "advice-review": "your PR has changes requested. let's work through them.",
-  "advice-rebase": "main moved on. let's rebase before you push."
+  "advice-rebase": "main moved on. let's rebase before you push.",
+  "waiting": "hey, one of your sessions is waiting on you.",
+  "wrapup": "wrapping up for the day? here's what's not saved yet.",
+  "sent": "it's in your message box. hit enter when you're ready.",
+  "advice-secret": "hold up. what you staged looks like it has a secret in it.",
+  "advice-untested": "that's a big change with no tests. want to add a few first?",
+  "advice-todos": "heads up, you're committing a few new TODOs."
 }

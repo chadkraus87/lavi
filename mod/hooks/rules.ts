@@ -1,10 +1,11 @@
-import type { Advice, Answer, LaviConfig, Signals, Snippet, Step } from '../types'
+import type { Advice, Answer, LaviConfig, Signals, Snippet, Staged, Step } from '../types'
 
 // Tuning knobs (a repo's .lavi.json can override the first three).
 export const MAX_DIRTY_FILES = 8
 export const MAX_MINUTES_SINCE_COMMIT = 45
 export const CONTEXT_WRAP_PERCENT = 70
 export const CI_CHECK_EVERY_MS = 5 * 60_000
+export const BIG_STAGED_LINES = 300
 
 const TEST_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\bvitest\b|\bjest\b|\bpytest\b|\bgo test\b|\bcargo test\b|\bplaywright test\b|\bswift test\b|\bclaude plugin test\b/
 const LINT_RE = /\btsc\b|\beslint\b|\bbiome\s+(check|lint)\b|\bruff\b|\bmypy\b|\bpyright\b|\bswiftlint\b|\bcargo clippy\b|\bgo vet\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?(lint|typecheck|type-check)\b/
@@ -47,6 +48,59 @@ export function sanitizeConfig(raw: unknown): LaviConfig {
   return cfg
 }
 export const isCodeFile = (path: string) => CODE_RE.test(path)
+
+// What a leaked credential looks like in an added line. Only file names ever leave this function, never the match.
+const SECRET_RES = [
+  /AKIA[0-9A-Z]{16}/, // AWS access key
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bgh[pousr]_[A-Za-z0-9]{36,}/, // GitHub
+  /\bgithub_pat_[A-Za-z0-9_]{40,}/,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/, // Slack
+  /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}/, // Anthropic, OpenAI
+  /\bAIza[0-9A-Za-z_-]{35}/, // Google
+  /\b[rs]k_live_[0-9A-Za-z]{20,}/, // Stripe
+  /(?:api[_-]?key|secret|token|passw(?:or)?d)["']?\s*[:=]\s*["'][^"'\s]{12,}["']/i, // key = "long literal"
+]
+const ENV_RE = /(?:^|\/)\.env(?:\.(?!example$|sample$|template$|dist$)[\w.-]+)?$/
+const TEST_FILE_RE = /(?:^|\/)(?:tests?|__tests__|spec)\/|\.(?:test|spec)\.\w+$|_test\.(?:go|py)$|(?:^|\/)test_[^/]+\.py$|Tests?\.swift$/
+const TODO_RE = /\b(?:TODO|FIXME|XXX|HACK)\b/
+
+/**
+ * Checks what's staged for commit: `git diff --cached --numstat` and `git diff --cached -U0`.
+ * File names are cleaned (they come from the repo) and the secret itself is never kept.
+ */
+export function scanStaged(numstat: string, diff: string): Staged {
+  const clean = (p: string) => p.replace(/[^\w./ -]/g, '').slice(-60)
+  const paths: string[] = []
+  let lines = 0
+  for (const row of numstat.split('\n')) {
+    const [a, d, ...rest] = row.split('\t')
+    if (!rest.length) continue
+    paths.push(rest.join('\t'))
+    lines += (Number(a) || 0) + (Number(d) || 0)
+  }
+  const secretFiles = new Set<string>()
+  let file = '', todos = 0
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++ ')) { file = line.slice(4).replace(/^b\//, ''); continue }
+    if (!line.startsWith('+')) continue
+    if (TODO_RE.test(line)) todos++
+    if (SECRET_RES.some(re => re.test(line))) secretFiles.add(clean(file))
+  }
+  return {
+    files: paths.length, lines,
+    secretFiles: [...secretFiles],
+    envFiles: paths.filter(p => ENV_RE.test(p)).map(clean),
+    codeFiles: paths.filter(p => isCodeFile(p) && !TEST_FILE_RE.test(p)).length,
+    testFiles: paths.filter(p => TEST_FILE_RE.test(p)).length,
+    todos,
+  }
+}
+
+const names = (files: string[]) => {
+  const short = files.map(f => f.split('/').pop() || f)
+  return short.slice(0, 3).join(', ') + (short.length > 3 ? ` +${short.length - 3} more` : '')
+}
 
 /** The one-click deep check: a full QA pass and security audit, fixing as it goes, ending in a report. */
 export const QA_PROMPT = [
@@ -100,6 +154,21 @@ export function advise(s: Signals, now = Date.now(), cfg: LaviConfig = {}): Advi
   const sinceCommit = Number.isFinite(minutesSinceCommit) ? `${Math.round(minutesSinceCommit)} min` : 'ever (no commits yet)'
   const pr = s.prNumber ? `PR #${s.prNumber}` : 'this branch'
 
+  const st = s.staged
+  if (st && (st.secretFiles.length || st.envFiles.length)) {
+    const where = names([...st.secretFiles, ...st.envFiles.filter(f => !st.secretFiles.includes(f))])
+    steps.push({
+      id: 'secret', mood: 'worried',
+      snippets: [
+        snip('unstage + fix', `my staged changes look like they include a secret (in ${where}). unstage it, move the secret into an env var or a gitignored .env, make sure .gitignore covers it, and check git history doesn't already have it. don't commit yet.`),
+        snip('is it real?', `look at my staged changes in ${where} and tell me whether anything there is a real secret (API key, token, password). don't print the secret itself.`),
+      ],
+      text: 'hold up: what you staged looks like it has a secret in it.',
+      why: st.secretFiles.length
+        ? `something in ${names(st.secretFiles)} looks like a key or password. once it's committed, it lives in the history for good.`
+        : `${names(st.envFiles)} is staged, and .env files usually hold secrets. once it's committed, it lives in the history for good.`,
+    })
+  }
   if (s.lastTest === 'fail')
     steps.push({
       id: 'fix-tests', mood: 'worried',
@@ -158,6 +227,16 @@ export function advise(s: Signals, now = Date.now(), cfg: LaviConfig = {}): Advi
       text: `you're working straight on ${s.branch}. spin up a branch first.`,
       why: `a branch is a safe sandbox: if this goes sideways, ${s.branch} stays clean.`,
     })
+  if (st && st.lines >= BIG_STAGED_LINES && st.codeFiles > 0 && st.testFiles === 0)
+    steps.push({
+      id: 'untested', mood: 'nudge',
+      snippets: [
+        snip('add tests', 'write tests for my staged changes before we commit, then run them.'),
+        snip('review staged', 'review my staged changes for bugs and edge cases before I commit. plain words, most important first.'),
+      ],
+      text: 'big change staged, but no tests in it.',
+      why: `${st.lines} lines across ${plural(st.files, 'file')} and none of them are tests. a few tests now beat a scary debug later.`,
+    })
   if (dirty && (s.dirtyFiles > maxDirty || minutesSinceCommit > maxMinutes))
     steps.push({
       id: 'commit', mood: 'nudge',
@@ -197,6 +276,16 @@ export function advise(s: Signals, now = Date.now(), cfg: LaviConfig = {}): Advi
       ],
       text: 'push your commits up.',
       why: `${plural(s.ahead, 'commit')} only live on this Mac right now. pushing backs them up.`,
+    })
+  if (st && st.todos > 0)
+    steps.push({
+      id: 'todos', mood: 'calm',
+      snippets: [
+        snip('list them', 'list the TODO/FIXME comments in my staged changes and say which ones to finish before committing.'),
+        snip('finish them', 'finish the TODO/FIXME items in my staged changes, then show me what changed.'),
+      ],
+      text: `${plural(st.todos, 'new TODO')} in what you've staged.`,
+      why: "fine if it's on purpose. they're easy to forget once they're committed.",
     })
   if (steps.length === 0)
     steps.push({

@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
-import type { Advice, Answer, LaviConfig, Pings, SessionFile, Signals } from '../types'
+import type { Advice, Answer, LaviConfig, Pings, SessionFile, Signals, Staged, Waiting } from '../types'
 import { approvalPing, canPush, NO_PINGS, NUDGE_AFTER_MS, nudgePing, questionPing, redact, turnPing } from './pings'
-import { advise, CI_CHECK_EVERY_MS, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseFocus, parseGitStatus, parsePr, QA_PROMPT, sanitizeConfig, speakable } from './rules'
+import { advise, CI_CHECK_EVERY_MS, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseFocus, parseGitStatus, parsePr, QA_PROMPT, sanitizeConfig, scanStaged, speakable } from './rules'
 
 const PANE = 'codebuddy'
 // The voice is casual; the thinking is not. Keep both halves of this prompt.
@@ -25,13 +25,14 @@ const HANDOFF = [
 const signals = atom({ plugin: 'codebuddy', key: 'signals' } as const, {
   isGit: false, branch: '', defaultBranch: '', dirtyFiles: 0, ahead: 0,
   lastCommitAt: null, lastTest: null, editsSinceTest: 0, contextPercent: 0,
-  lastLint: null, behind: 0, ci: null, prNumber: null, changesRequested: false, ciCheckedAt: 0, celebrate: null,
+  lastLint: null, behind: 0, ci: null, prNumber: null, changesRequested: false, ciCheckedAt: 0, celebrate: null, staged: null,
 } as Signals)
 const advice = atom({ plugin: 'codebuddy', key: 'advice' } as const, null as Advice | null)
 const answer = atom({ plugin: 'codebuddy', key: 'answer' } as const, null as Answer | null)
 const bandHiddenFor = atom({ plugin: 'codebuddy', key: 'bandHiddenFor' } as const, null as string | null)
 const isAsking = atom({ plugin: 'codebuddy', key: 'isAsking' } as const, false)
 const pings = atom({ plugin: 'codebuddy', key: 'pings' } as const, NO_PINGS as Pings)
+const waiting = atom({ plugin: 'codebuddy', key: 'waiting' } as const, null as Waiting)
 
 const git = async ($: EngineInterface, ...args: string[]) => {
   try {
@@ -63,16 +64,64 @@ const project = async ($: EngineInterface) => {
 const writeFile = async ($: EngineInterface, status: SessionFile['status']) => {
   const home = await $.env.get('HOME')
   if (!home) return
-  const [id, cwd, a, s] = await Promise.all([$.session.id(), $.session.cwd(), read($, advice), read($, signals)])
+  const [id, cwd, a, s, w] = await Promise.all([$.session.id(), $.session.cwd(), read($, advice), read($, signals), read($, waiting)])
   // In the desktop app, its own session id lets the robot open this session instead of importing a copy.
   const host = await $.env.get('CLAUDE_CODE_HOST_SESSION_ID')
   const appId = host && /^local_[A-Za-z0-9-]{1,64}$/.test(host) ? host : undefined
   const file: SessionFile = {
     id, cwd, project: cwd.split('/').pop() ?? cwd, branch: s.branch, status,
     mood: status === 'busy' ? 'busy' : (a?.mood ?? 'calm'),
-    steps: a?.steps ?? [], updatedAt: Date.now(), quiet: cfg.quiet === true, celebrate: s.celebrate, appId,
+    steps: a?.steps ?? [], updatedAt: Date.now(), quiet: cfg.quiet === true, celebrate: s.celebrate, appId, waiting: w,
   }
   await $.fs.write(`${home}/.claude/codebuddy/sessions/${id}.json`, JSON.stringify(file, null, 2))
+}
+
+/**
+ * The pre-commit check: what's staged, scanned for secrets, .env files, big untested changes and new TODOs.
+ * No external diff tools or textconv filters: a repo's own config could point those at any program.
+ */
+const checkStaged = async ($: EngineInterface): Promise<Staged | null> => {
+  const numstat = await git($, 'diff', '--cached', '--numstat', '--no-ext-diff', '--no-textconv')
+  if (!numstat) return null
+  const diff = await git($, 'diff', '--cached', '-U0', '--no-color', '--no-ext-diff', '--no-textconv')
+  return scanStaged(numstat, (diff ?? '').slice(0, 400_000))
+}
+
+/** Claude is (or stops being) blocked on you; the desktop robot shows it. */
+const setWaiting = async ($: EngineInterface, w: Waiting) => {
+  const before = await read($, waiting)
+  if (!before && !w) return
+  await update($, waiting, () => w)
+  await writeFile($, 'busy')
+}
+
+let lastFillAt = 0 // ponytail: module memory; after a hot reload the 15 s staleness check stops replays
+
+/**
+ * The desktop robot's prompt buttons: it writes {to, text | action, at, id} to fill.json and this
+ * session, if it's the one named, drops the text into its own message box (never sends it), then
+ * answers in fill-ack.json so the robot knows whether to fall back to the clipboard.
+ */
+const fillFromDesktop = async ($: EngineInterface) => {
+  const home = await $.env.get('HOME')
+  if (!home) return
+  let req: { to?: unknown; text?: unknown; action?: unknown; at?: unknown; id?: unknown }
+  try { req = JSON.parse(await $.fs.read(`${home}/.claude/codebuddy/fill.json`)) } catch { return }
+  if (typeof req.at !== 'number' || req.at <= lastFillAt) return
+  lastFillAt = req.at
+  if (req.to !== (await $.session.id()) || Date.now() - req.at > 15_000) return
+  const ack = (ok: boolean, why?: string) =>
+    $.fs.write(`${home}/.claude/codebuddy/fill-ack.json`, JSON.stringify({ id: req.id, ok, why, at: Date.now() })).catch(() => {})
+  if (req.action === 'handoff') {
+    await ack(true, 'handoff')
+    return draftHandoff($, 'desktop')
+  }
+  if (typeof req.text !== 'string' || !req.text.trim() || req.text.length > 10_000) return ack(false, 'bad request')
+  const box = await $.prompt.read()
+  const filled = await $.prompt.fill({ text: box.text.trim() ? `\n${req.text}` : req.text, mode: 'append' })
+  await $.store.set('lastFill', filled.isFilled ? 'box (from desktop Lavi)' : `desktop Lavi fell back to the clipboard (${filled.refusal ?? 'refused'})`)
+  if (filled.isFilled) $.ui.toast("lavi put it in your message box. tweak it or hit enter.")
+  await ack(filled.isFilled, filled.refusal)
 }
 
 const refresh = async ($: EngineInterface) => {
@@ -89,6 +138,7 @@ const refresh = async ($: EngineInterface) => {
     next = {
       ...next, branch, ahead, dirtyFiles: dirty, defaultBranch,
       lastCommitAt: last ? Number(last) * 1000 : null, behind: Number(behind ?? 0) || 0,
+      staged: await checkStaged($),
     }
     // CI and review state for this branch's PR, via gh, at most every 5 min (it's a network call).
     if (Date.now() - next.ciCheckedAt > CI_CHECK_EVERY_MS) {
@@ -275,6 +325,9 @@ export const register: Register = on => {
     if (home) await $.fs.write(`${home}/.claude/codebuddy/qa-prompt.txt`, QA_PROMPT).catch(() => {})
     await syncFocus($)
     $.clock.every(30_000, () => void syncFocus($).catch(() => {}))
+    // Requests already in fill.json are old: never replay them.
+    if (home) lastFillAt = Math.max(lastFillAt, Number(JSON.parse(await $.fs.read(`${home}/.claude/codebuddy/fill.json`).catch(() => '{}')).at) || 0)
+    $.clock.every(1000, () => void fillFromDesktop($).catch(() => {}))
     await refresh($)
     return started
   })
@@ -291,13 +344,17 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     // Claude is about to ask you something: ping before the dialog blocks the turn.
     if (e.tool === 'AskUserQuestion' && !e.agentId) {
+      await setWaiting($, { kind: 'question', since: Date.now() })
       const q = (e as { questions?: { question?: string }[] }).questions?.[0]?.question
       if (q && !(await read($, pings)).waitingPushed) {
         await update($, pings, p => ({ ...p, waitingPushed: true }))
         void push($, questionPing(await project($), q)).catch(() => {})
       }
     }
+    // A tool running means any approval it needed was given.
+    else if (!e.agentId) await setWaiting($, null)
     const ran = await next(e)
+    if (e.tool === 'AskUserQuestion' && !e.agentId) await setWaiting($, null) // answered
     if (ran.deny) return ran
     // A command sent to the background hasn't finished yet: its result says nothing about pass/fail.
     const background = (e as { run_in_background?: boolean }).run_in_background === true
@@ -325,6 +382,7 @@ export const register: Register = on => {
   // Claude needs your approval to run a tool.
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
+    if (verdict.decision === 'ask' && e.tool !== 'AskUserQuestion') await setWaiting($, { kind: 'approval', since: Date.now() })
     if (verdict.decision === 'ask' && e.tool !== 'AskUserQuestion' && !(await read($, pings)).waitingPushed) {
       await update($, pings, p => ({ ...p, waitingPushed: true }))
       void push($, approvalPing(await project($), e.tool, e.input)).catch(() => {})
@@ -334,6 +392,7 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     await update($, pings, p => ({ ...p, turnFailed: false, waitingPushed: false }))
+    await update($, waiting, () => null)
     await writeFile($, 'busy')
     return next(e)
   })
@@ -341,6 +400,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
     if (e.agentId) return ran // a subagent's turn, not yours
+    await update($, waiting, () => null)
     const a = await refresh($)
     const p = await read($, pings)
     const name = await project($)

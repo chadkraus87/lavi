@@ -12,7 +12,7 @@
 ![Swift](https://img.shields.io/badge/Swift-AppKit%20%2B%20SwiftUI-f05138.svg)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6.svg)
 
-<img src="docs/media/lavi-demo.gif" alt="Lavi looks worried while tests fail, hops happily when they pass, then reads an answer aloud with a speech bubble" width="640">
+<img src="docs/media/lavi-demo.gif" alt="Lavi looks worried while tests fail, celebrates when they pass, then shows a badge and a speech bubble when a session needs your answer" width="640">
 
 </div>
 
@@ -49,6 +49,7 @@ Rules run after every turn, highest priority first. The top one becomes the advi
 
 | Lavi says | When |
 |---|---|
+| hold up: what you staged looks like it has a secret in it. | a staged change looks like an API key, token, private key or password, or a `.env` file is staged |
 | tests are failing. let's fix those first. | the last test run failed |
 | CI is red on PR #12. | this branch's PR has failing checks (via `gh`) |
 | types or lint are broken. | the last `tsc` / `eslint` / `ruff` / `mypy`… run failed |
@@ -56,10 +57,14 @@ Rules run after every turn, highest priority first. The top one becomes the advi
 | quick test run? | code was edited since the last test run |
 | you're working straight on main. spin up a branch first. | uncommitted changes on the default branch |
 | good time to save a checkpoint. commit what you've got. | more than 8 changed files, or no commit in 45+ min |
+| big change staged, but no tests in it. | 300+ staged lines of code and no test files |
 | main moved on. rebase before you push. | your branch is behind the default branch (as of your last fetch) |
 | my memory's getting full (72%). let's write a quick handoff and start fresh. | the context window is 70%+ full |
 | push your commits up. | commits that only exist on this Mac |
+| 2 new TODOs in what you've staged. | staged lines add TODO / FIXME / XXX / HACK |
 | nice, you're in a good spot. | none of the above |
+
+The staged-changes check reads `git diff --cached` on your Mac and only ever reports file names, never the secret itself.
 
 Every piece of advice comes with the reason and the real numbers ("12 files changed and no commit in 50 min. a commit is your undo button."). Thresholds are tunable per repo; see [Configuration](#configuration).
 
@@ -72,11 +77,16 @@ Each piece of advice offers 2–3 prompts, for example *run all tests*, *just wh
 - **In a session:** the band above the message box shows the advice and its prompts as buttons. Click one, or press ctrl+x tab, then `1`–`3`. The prompt **drops into your message box as a draft, and nothing is sent until you press Enter**. Anything you already typed stays; the prompt goes on a new line after it.
 - **🛡 QA + security:** always on the band (`q`), in the pane, and as `/lavi qa`. It asks Claude to run the tests, typecheck and lint, hunt for real bugs, audit for security issues, fix what it finds without committing, and finish with a full severity-ranked report.
 - **Draft handoff:** Lavi writes a session handoff (Done / Decisions / Next / Gotchas) and drops it in the box to review. It's worded for the author's SecondBrain notes vault; change `HANDOFF` in `mod/hooks/register.tsx` to match your own notes.
-- **On the desktop robot**, prompts are copied to the clipboard, and the QA pass can open a new Claude session with the prompt already typed in.
+- **On the desktop robot**, clicking a prompt (or pressing `1`–`3`) puts it straight in that session's message box and brings the session forward. If the session can't take it (it's closed, or a dialog is open), the prompt lands on your clipboard instead. The QA pass can open a new Claude session with the prompt already typed in.
 
 ## The desktop robot
 
 <img src="docs/media/lavi-moods.png" alt="Lavi's seven moods: happy, nudge, worried, calm, busy, sleepy, talking">
+
+<p align="center">
+<img src="docs/media/lavi-menu.png" alt="Lavi's menu: a speech-bubble card with the current advice, numbered prompt buttons, four quick actions, and Live, Recent and Projects tabs (sample sessions)" width="360">
+<img src="docs/media/lavi-settings.png" alt="Lavi's Settings window in his lavender palette, with Voice, Read answers aloud and Stay quiet cards" width="360">
+</p>
 
 | Mood | When |
 |---|---|
@@ -88,7 +98,7 @@ Each piece of advice offers 2–3 prompts, for example *run all tests*, *just wh
 | sleepy (zZ) | no session, or idle 30+ min |
 | talking | mouth moves with his voice |
 
-**His voice.** Lavi has 27 pre-recorded lines in a custom ElevenLabs voice. They play offline, with no API key and no cost per use. He speaks:
+**His voice.** Lavi has 33 pre-recorded lines in a custom ElevenLabs voice. They play offline, with no API key and no cost per use. He speaks:
 
 | When | Line |
 |---|---|
@@ -97,21 +107,25 @@ Each piece of advice offers 2–3 prompts, for example *run all tests*, *just wh
 | a 3+ min task finishes while you're at the Mac | "done with that big one" |
 | tests go red → green, or you push | a celebration, with a hop |
 | the Claude app opens, or a session starts | a greeting (the first one each day comes with a project check-in) |
+| a session needs your answer or approval | "one of your sessions is waiting on you" |
+| the end-of-day wrap-up | "wrapping up for the day?" |
 | the Claude app quits | a goodbye |
 
-**Morning check-in.** On the first greeting each day, Lavi sweeps your projects folder and shows which repos have uncommitted or unpushed work. Each one in his menu opens a new Claude session in that folder.
+**Waiting on you.** When Claude asks you a question or needs your OK to run something, Lavi hops, shows a count badge on his head, and says which project needs you. In his menu those sessions go to the top of *Live* with a *needs you* tag, and *Waiting on you* jumps straight to the session when there's just one.
+
+**Morning check-in and end-of-day wrap-up.** On the first greeting each day, Lavi sweeps your projects folder and shows which repos have uncommitted or unpushed work. Each one in his menu opens a new Claude session in that folder. From 6pm (your choice in Settings), once a day while you're at the Mac, he does the same sweep as a wrap-up and points you at *Handoff*, which drafts the day's notes into your session's message box.
 
 **He stays quiet** when muted, in quiet hours (10pm–8am by default), during calendar events (optional), while a Focus mode is on (automatic, see [Focus modes](#focus-modes)), in repos marked quiet, and never more often than every 20 seconds. Clicking him still works in quiet hours. Muting him (Settings → *Lavi talks*) silences everything.
 
 **Read answers aloud (optional).** 🔊 *read it to me* under an Ask Lavi answer speaks it live in his voice through ElevenLabs' Eleven v4 Turbo. The audio streams in, so he starts talking in well under a second. It takes your own API key and costs credits per character, capped at 600 characters per answer.
 
 **Also:**
-- **Speech bubbles:** cartoon callouts.
 - **Five sizes:** Small (84pt) to XXL (240pt).
-- **Settings window:** voice, quiet rules, size, shortcut, start at login, nudges, check-in folder, ElevenLabs key.
+- **Settings window:** in Lavi's own lavender look. Voice, quiet rules, size, shortcut, start at login, nudges, check-in and wrap-up, ElevenLabs key.
 - **⌃⌥L** opens his menu from anywhere.
 - **Stretch-break nudges:** off by default.
-- **Menu:** sessions waiting on you, live and recent sessions (open in the Claude app, or resume in Terminal), and *Hide for 1 hour*.
+- **Menu:** click Lavi for a speech-bubble card with what he suggests and numbered prompts, one-tap *QA + security*, *Waiting on you*, *New session* and *Handoff*, and your sessions in *Live*, *Recent* and *Projects* tabs (open in the Claude app, or ⋯ to resume in Terminal). Keys: `1`–`3` send a prompt, ↑↓ pick a session, ←→ switch tabs, Return opens it, Esc closes.
+- **Speech bubbles:** cartoon callouts that end with a *working in folder · branch* tag, so you know which session he means.
 - **Reduce Motion:** turns every animation off.
 
 ## Phone pings
@@ -190,7 +204,7 @@ To uninstall, run `./install.sh --uninstall`. That removes the app, the LaunchAg
 
 A `.lavi.json` arrives with whatever you clone, so Lavi treats it as untrusted and keeps only well-formed values.
 
-**Desktop:** everything else lives in **Settings** (Lavi's menu → *Settings…*, `/lavi settings`, or `open ~/Applications/CodeBuddy.app --args --settings`).
+**Desktop:** everything else lives in **Settings** (Lavi's menu → *Settings*, `/lavi settings`, or `open ~/Applications/CodeBuddy.app --args --settings`).
 
 ### Focus modes
 
@@ -212,11 +226,12 @@ Settings has copy buttons for both commands.
   - read-aloud text, sent to ElevenLabs, only when you press the button
 
   Nothing else.
-- **What Lavi reads:** your session's git state, your own Claude transcripts' first lines (for the session menu), your calendar (counts and times only, when calendar quiet is on), and which Focus is on. All of it stays on your Mac.
-- **What's stored:** small session files, your last read-aloud request and a status line, all in `~/.claude/codebuddy` (locked to your account, `0700`). Old session files are cleaned up after 7 days. Your ElevenLabs key is kept only in your login Keychain.
+- **What Lavi reads:** your session's git state (including what's staged, for the pre-commit check), your own Claude transcripts' first lines (for the session menu), your calendar (counts and times only, when calendar quiet is on), and which Focus is on. All of it stays on your Mac.
+- **What's stored:** small session files, your last read-aloud request, the last prompt the robot handed to a session (and its answer), and a status line, all in `~/.claude/codebuddy` (locked to your account, `0700`). Old session files are cleaned up after 7 days. Your ElevenLabs key is kept only in your login Keychain.
 - **Hardening:**
   - session ids are validated before anything touches a shell or a link (desktop sessions open directly by their app id instead of being re-imported)
-  - git runs with `core.fsmonitor=false`, because a repo's local config could otherwise make `git status` run a program
+  - git runs with `core.fsmonitor=false` (and diffs with `--no-ext-diff --no-textconv`), because a repo's local config could otherwise make git run a program
+  - a prompt from the robot only fills the session it names, only as a draft (never sent), and only if it's under 15 seconds old
   - `.lavi.json` is sanitized
   - ping text is redacted
   - read-aloud is rate-limited to one request every 5 seconds
@@ -245,9 +260,10 @@ mod/
   hooks/register.tsx    hooks: tool calls, turns, UI, commands, pings
   hooks/rules.ts        the advice rules, prompts, parsers (pure, tested)
   hooks/pings.ts        ping wording, spam guard, redaction (pure, tested)
-  hooks/*.test.ts(x)    26 tests
+  hooks/*.test.ts(x)    28 tests
 desktop/
-  main.swift            the robot: window, moods, bubbles, menu, voice triggers
+  main.swift            the robot: window, moods, bubbles, voice triggers
+  Menu.swift            Lavi's look (colors, bubble shape) and the click menu
   Settings.swift        SwiftUI settings window
   Speech.swift          ElevenLabs read-aloud (streamed) + Keychain
   Quiet.swift           calendar and Focus quiet
@@ -262,7 +278,7 @@ install.sh
 
 ```bash
 cd mod
-claude plugin test .        # the mod's 26 tests
+claude plugin test .        # the mod's 28 tests
 claude plugin validate .    # manifest + hooks check
 cd .. && ./install.sh       # rebuild and reinstall the app
 ```

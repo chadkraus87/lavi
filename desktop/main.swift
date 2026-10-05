@@ -23,6 +23,8 @@ let sayFile = home.appendingPathComponent(".claude/codebuddy/say.json")
 let qaFile = home.appendingPathComponent(".claude/codebuddy/qa-prompt.txt")
 let openSettingsFile = home.appendingPathComponent(".claude/codebuddy/open-settings")
 let readStatusFile = home.appendingPathComponent(".claude/codebuddy/read-aloud-status.txt") // shown by /lavi doctor
+let fillFile = home.appendingPathComponent(".claude/codebuddy/fill.json")    // prompt for a session's message box (the mod picks it up)
+let fillAckFile = home.appendingPathComponent(".claude/codebuddy/fill-ack.json") // …and its answer
 let sleepyAfter: Double = 30 * 60 * 1000 // ms with no activity before the robot dozes off
 
 /// Mood art bundled in Contents/Resources (built from desktop/art). Missing art falls back to the drawn blob.
@@ -34,10 +36,11 @@ let art: [String: NSImage] = Dictionary(uniqueKeysWithValues:
 struct Snippet: Decodable { let label: String; let text: String }
 struct Step: Decodable { let id: String?; let text: String; let why: String; let snippets: [Snippet]? }
 struct Celebrate: Decodable { let kind: String; let at: Double }
+struct Waiting: Decodable { let kind: String; let since: Double } // "question" or "approval"
 struct BuddySession: Decodable {
     let id: String, cwd: String, project: String, branch: String
     let status: String, mood: String, steps: [Step], updatedAt: Double
-    let quiet: Bool?, celebrate: Celebrate?, appId: String?
+    let quiet: Bool?, celebrate: Celebrate?, appId: String?, waiting: Waiting?
 }
 struct Transcript { let id: String; let cwd: String; let title: String; let modified: Date }
 
@@ -225,6 +228,8 @@ final class BuddyView: NSView {
     var mouth: Int? // 0 closed, 1 half, 2 open: set while Lavi speaks
     var onClick: ((NSEvent) -> Void)?
     var onHover: ((Bool) -> Void)?
+    /// Sessions blocked on you: drawn as a count badge on his head.
+    var badge = 0 { didSet { if badge != oldValue { needsDisplay = true } } }
     private var dragStart: NSPoint?
     private var didDrag = false
 
@@ -262,6 +267,18 @@ final class BuddyView: NSView {
         return bounceAmp * CGFloat(exp(-5 * t) * abs(sin(t * 14)))
     }
 
+    /// An ink circle with a white count and a lavender ring, top right, bobbing with him.
+    func drawBadge(_ bob: CGFloat) {
+        guard badge > 0 else { return }
+        let d = max(20, bounds.width * 0.17)
+        let r = NSRect(x: bounds.maxX - d - 4, y: bounds.maxY - d - 6 + bob, width: d, height: d)
+        let ring = NSBezierPath(ovalIn: r.insetBy(dx: -2, dy: -2)); Theme.lavender.setFill(); ring.fill()
+        Theme.ink.setFill(); NSBezierPath(ovalIn: r).fill()
+        let t = NSAttributedString(string: badge > 9 ? "9+" : "\(badge)", attributes: [.font: BubbleView.rounded(d * 0.55, .bold), .foregroundColor: NSColor.white])
+        let ts = t.size()
+        t.draw(at: NSPoint(x: r.midX - ts.width / 2, y: r.midY - ts.height / 2))
+    }
+
     var color: NSColor {
         switch mood {
         case "worried": return .systemRed
@@ -283,8 +300,10 @@ final class BuddyView: NSView {
             NSColor.black.withAlphaComponent(0.16).setFill()
             NSBezierPath(ovalIn: NSRect(x: bounds.width * 0.28, y: 2, width: bounds.width * 0.44, height: bounds.height * 0.06)).fill()
             img.draw(in: bounds.insetBy(dx: 2, dy: 2).offsetBy(dx: 0, dy: bob + 2), from: .zero, operation: .sourceOver, fraction: 1)
+            drawBadge(bob)
             return
         }
+        defer { drawBadge(bob) }
         let body = NSRect(x: 10, y: 8 + bob, width: bounds.width - 20, height: bounds.height - 22)
         // shadow
         NSColor.black.withAlphaComponent(0.18).setFill()
@@ -320,8 +339,11 @@ final class BuddyView: NSView {
 /// Lavi's speech bubble: a cartoon callout with a bold outline and a tail pointing at Lavi.
 final class BubbleView: NSView {
     var headline = NSAttributedString(), detail: NSAttributedString?
+    /// "working in <folder> · <branch>", drawn as a lilac pill at the bottom.
+    var place: NSAttributedString?
     var tailOnRight = true
-    static let ink = NSColor(srgbRed: 0.17, green: 0.13, blue: 0.27, alpha: 1) // Lavi's charcoal-purple
+    static let ink = Theme.ink
+    static let pillPad = NSSize(width: 9, height: 4), pillGap: CGFloat = 9
     static let pad = NSSize(width: 18, height: 14), tail: CGFloat = 22, margin: CGFloat = 10, maxText: CGFloat = 300
 
     static func rounded(_ size: CGFloat, _ weight: NSFont.Weight) -> NSFont {
@@ -336,11 +358,19 @@ final class BubbleView: NSView {
         return (h, d)
     }
 
+    /// The pill's size, text included.
+    func pillSize() -> NSSize? {
+        guard let place else { return nil }
+        let r = place.boundingRect(with: NSSize(width: Self.maxText - Self.pillPad.width * 2, height: 100), options: [.usesLineFragmentOrigin, .usesFontLeading]).integral
+        return NSSize(width: r.width + Self.pillPad.width * 2, height: r.height + Self.pillPad.height * 2)
+    }
+
     /// Window size needed for the current text.
     func fittingSize() -> NSSize {
         let (h, d) = textRects()
-        let w = max(h.width, d?.width ?? 0) + Self.pad.width * 2
-        let tH = h.height + (d.map { $0.height + 4 } ?? 0) + Self.pad.height * 2
+        let pill = pillSize()
+        let w = max(h.width, d?.width ?? 0, pill?.width ?? 0) + Self.pad.width * 2
+        let tH = h.height + (d.map { $0.height + 4 } ?? 0) + (pill.map { $0.height + Self.pillGap } ?? 0) + Self.pad.height * 2
         return NSSize(width: w + Self.tail + Self.margin * 2, height: max(tH, 52) + Self.margin * 2)
     }
 
@@ -379,7 +409,12 @@ final class BubbleView: NSView {
         let (h, d) = textRects()
         let x = body.minX + Self.pad.width
         var y = body.maxY - Self.pad.height - h.height
-        if d == nil { y = body.midY - h.height / 2 }
+        if d == nil && place == nil { y = body.midY - h.height / 2 }
+        if let place, let ps = pillSize() {
+            let pill = NSRect(x: x, y: body.minY + Self.pad.height, width: ps.width, height: ps.height)
+            Theme.lilac.setFill(); NSBezierPath(roundedRect: pill, xRadius: ps.height / 2, yRadius: ps.height / 2).fill()
+            place.draw(with: pill.insetBy(dx: Self.pillPad.width, dy: Self.pillPad.height), options: [.usesLineFragmentOrigin, .usesFontLeading])
+        }
         headline.draw(with: NSRect(x: x, y: y, width: Self.maxText, height: h.height), options: [.usesLineFragmentOrigin, .usesFontLeading])
         if let detail, let d { detail.draw(with: NSRect(x: x, y: y - 4 - d.height, width: Self.maxText, height: d.height), options: [.usesLineFragmentOrigin, .usesFontLeading]) }
     }
@@ -398,22 +433,23 @@ final class Bubble: NSPanel {
     private var generation = 0
 
     /// Shows the bubble, then hides it after `seconds`, unless a newer bubble replaced it by then.
-    func flash(_ text: String, detail: String? = nil, near f: NSRect, for seconds: TimeInterval) {
-        show(text, detail: detail, near: f)
+    func flash(_ text: String, detail: String? = nil, place: (String, String)? = nil, near f: NSRect, for seconds: TimeInterval) {
+        show(text, detail: detail, place: place, near: f)
         let mine = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
             if self?.generation == mine { self?.orderOut(nil) }
         }
     }
 
-    /// `text` is the bold headline; `detail` is the smaller line under it.
-    func show(_ text: String, detail: String? = nil, near f: NSRect) {
+    /// `text` is the bold headline; `detail` is the smaller line under it; `place` (project, branch) is the session it's about.
+    func show(_ text: String, detail: String? = nil, place: (String, String)? = nil, near f: NSRect) {
         generation += 1
         let para = NSMutableParagraphStyle(); para.lineSpacing = 1
         bubbleView.headline = NSAttributedString(string: text, attributes: [
             .font: BubbleView.rounded(16, .semibold), .foregroundColor: BubbleView.ink, .paragraphStyle: para])
         bubbleView.detail = detail.map { NSAttributedString(string: $0, attributes: [
             .font: BubbleView.rounded(13, .regular), .foregroundColor: BubbleView.ink.withAlphaComponent(0.72), .paragraphStyle: para]) }
+        bubbleView.place = place.map { Self.placeText(project: $0.0, branch: $0.1) }
         let sz = bubbleView.fittingSize()
         let minX = screen?.visibleFrame.minX ?? NSScreen.main?.visibleFrame.minX ?? 0
         bubbleView.tailOnRight = f.minX - sz.width + 4 > minX // sit left of Lavi when there's room
@@ -429,13 +465,36 @@ final class Bubble: NSPanel {
     }
 }
 
+extension Bubble {
+    /// 📁 working in **codebuddy** · ⎇ master
+    static func placeText(project: String, branch: String) -> NSAttributedString {
+        let font = BubbleView.rounded(11, .medium), bold = BubbleView.rounded(11, .bold)
+        let ink: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: Theme.ink]
+        func icon(_ name: String) -> NSAttributedString {
+            guard let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold).applying(.init(paletteColors: [Theme.ink]))) else { return NSAttributedString() }
+            let a = NSTextAttachment(); a.image = img
+            a.bounds = NSRect(x: 0, y: -1, width: img.size.width, height: img.size.height)
+            return NSAttributedString(attachment: a)
+        }
+        let short = { (s: String) in s.count > 26 ? String(s.prefix(24)) + "…" : s }
+        let out = NSMutableAttributedString()
+        out.append(icon("folder.fill")); out.append(NSAttributedString(string: " working in ", attributes: ink))
+        out.append(NSAttributedString(string: short(project), attributes: [.font: bold, .foregroundColor: Theme.ink]))
+        out.append(NSAttributedString(string: "  ·  ", attributes: [.font: font, .foregroundColor: Theme.ink.withAlphaComponent(0.5)]))
+        out.append(icon("arrow.triangle.branch")); out.append(NSAttributedString(string: " " + (branch.isEmpty ? "no git" : short(branch)), attributes: ink))
+        return out
+    }
+}
+
 // MARK: - App
 
-final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class App: NSObject, NSApplicationDelegate {
     let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: size, height: size),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     let view = BuddyView(frame: NSRect(x: 0, y: 0, width: size, height: size))
     let bubble = Bubble()
+    let menuPanel = MenuPanel()
     var sessions: [BuddySession] = []
     var hiddenUntil = Date.distantPast
     var lastMood = ""
@@ -454,6 +513,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var checkIn: [ProjectState] = [] // last morning check-in
     var ticks = 0
     var appIDs: [String: String] = [:] // refreshed each time the menu opens
+    var seenWaiting: Set<String> = [] // "<session>|<since>" already announced
+    var lastCheckInAt = Date.distantPast
+    var fillTimer: Timer?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
@@ -478,16 +540,16 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installEditMenu()
         // Requests already in say.json at launch are old: don't replay them. (A missing file means none, so the first press counts.)
         lastSayAt = ((try? Data(contentsOf: sayFile)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["at"] as? Double) ?? 0
-        Hotkey.onPress = { [weak self] in self?.showMenu(at: nil) }
+        Hotkey.onPress = { [weak self] in self?.showMenu() }
         applySettings()
         // `open ~/Applications/CodeBuddy.app --args --settings` opens Settings straight away.
         if CommandLine.arguments.contains("--settings") { DispatchQueue.main.async { SettingsWindow.show() } }
         view.setAccessibilityRole(.button)
-        view.onClick = { [weak self] e in self?.showMenu(at: e.locationInWindow) }
+        view.onClick = { [weak self] _ in self?.showMenu() }
         view.onHover = { [weak self] inside in
             guard let self else { return }
-            if inside, let s = self.sessions.first, let step = s.steps.first {
-                self.bubble.show(step.text, detail: "\(s.project) · \(step.why)", near: self.panel.frame)
+            if inside, !self.menuPanel.isVisible, let s = self.sessions.first, let step = s.steps.first {
+                self.bubble.show(step.text, detail: step.why, place: (s.project, s.branch), near: self.panel.frame)
             } else { self.bubble.orderOut(nil) }
         }
         tick()
@@ -518,19 +580,22 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func tick() {
         let visible = Date() < holdVisibleUntil || (Date() > hiddenUntil && isClaudeRunning())
         if visible != panel.isVisible { visible ? panel.orderFrontRegardless() : panel.orderOut(nil) }
-        if !visible { bubble.orderOut(nil) }
+        if !visible { bubble.orderOut(nil); menuPanel.close() }
         sessions = loadBuddySessions()
         let s = sessions.first
         let idleFor = Date().timeIntervalSince1970 * 1000 - (s?.updatedAt ?? 0)
         view.mood = s == nil || (s!.status == "idle" && idleFor > sleepyAfter) ? "sleepy" : s!.mood
-        view.setAccessibilityLabel(s.map { "Lavi, \($0.project): \($0.steps.first?.text ?? "idle")" } ?? "Lavi, dozing. No active session.")
+        let waitingN = sessions.filter { $0.waiting != nil && $0.status != "ended" }.count
+        view.setAccessibilityLabel((s.map { "Lavi, \($0.project): \($0.steps.first?.text ?? "idle")" } ?? "Lavi, dozing. No active session.")
+            + (waitingN > 0 ? ". \(waitingN) session\(waitingN == 1 ? "" : "s") waiting on you." : ""))
         // Speak up briefly when the advice changes.
         let key = "\(s?.id ?? "")|\(s?.steps.first?.text ?? "")"
         if !lastMood.isEmpty, key != lastMood, let s, s.status == "idle", let step = s.steps.first, panel.isVisible {
-            bubble.flash(step.text, detail: s.project, near: panel.frame, for: 6)
+            bubble.flash(step.text, place: (s.project, s.branch), near: panel.frame, for: 6)
         }
         lastMood = key
         if Date() < celebrateUntil { view.mood = "happy" }
+        noticeWaiting()
         // `/lavi settings` (or touching this file) opens the Settings window in the running Lavi.
         if FileManager.default.fileExists(atPath: openSettingsFile.path) {
             try? FileManager.default.removeItem(at: openSettingsFile)
@@ -538,6 +603,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if panel.isVisible { speakIfSomethingChanged(); breakNudge(); readAloudIfAsked() }
         if isFirstTick && panel.isVisible { _ = morningCheckIn() }
+        if panel.isVisible && !isFirstTick { wrapUpIfItsTime() }
         isFirstTick = false
         ticks += 1
         if ticks % 1800 == 0 { pruneSessions() } // hourly
@@ -601,6 +667,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let today = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .none)
         guard force || (Prefs.morningCheckIn && Prefs.d.string(forKey: "lastCheckInDay") != today) else { return false }
         Prefs.d.set(today, forKey: "lastCheckInDay")
+        lastCheckInAt = Date()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let found = Projects.scan()
             DispatchQueue.main.async {
@@ -659,6 +726,73 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 status("streamed \(String(format: "%.1f", stream.seconds)) s of audio in \(String(format: "%.1f", Date().timeIntervalSince(asked))) s (Eleven v4 Turbo)")
                 self.bubble.flash("reading it out…", detail: preview, near: self.panel.frame, for: max(stream.remaining + 0.8, 2))
+            }
+        }
+    }
+
+    /// Claude blocked on you somewhere: a badge with the count, and a hop + bubble the first time each one appears.
+    func noticeWaiting() {
+        let now = Date().timeIntervalSince1970 * 1000
+        let blocked = sessions.filter { $0.status != "ended" && $0.waiting != nil && now - $0.updatedAt < 6 * 3_600_000 }
+        view.badge = blocked.count
+        let keys = Set(blocked.map { "\($0.id)|\($0.waiting!.since)" })
+        defer { seenWaiting = keys }
+        guard !isFirstTick, panel.isVisible, let s = blocked.first(where: { !seenWaiting.contains("\($0.id)|\($0.waiting!.since)") }), s.quiet != true else { return }
+        view.hop(10)
+        voice.say("waiting")
+        bubble.flash("\(s.project) needs you", detail: s.waiting!.kind == "question" ? "Claude asked you a question. click me to jump to it." : "Claude needs your OK to run something. click me to jump to it.",
+                     place: (s.project, s.branch), near: panel.frame, for: 8)
+    }
+
+    /// End of the day: what's not committed or pushed across your projects, and a nudge to write the handoff.
+    func wrapUpIfItsTime() {
+        let today = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .none)
+        guard Prefs.wrapUp, Calendar.current.component(.hour, from: Date()) >= Prefs.wrapUpHour,
+              Prefs.d.string(forKey: "lastWrapUpDay") != today, secondsSinceInput() < 300, // only while you're here
+              Date().timeIntervalSince(lastCheckInAt) > 600 else { return } // not right on top of the morning check-in
+        Prefs.d.set(today, forKey: "lastWrapUpDay")
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let found = Projects.scan()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.checkIn = found
+                self.voice.say("wrapup")
+                let lines = found.prefix(4).map(Projects.summary)
+                self.bubble.flash(found.isEmpty ? "wrapping up? everything's committed and pushed." : "wrapping up? a few things aren't saved yet.",
+                                  detail: (found.isEmpty ? "" : lines.joined(separator: "\n") + (found.count > 4 ? "\n+\(found.count - 4) more in my menu" : "") + "\n")
+                                    + "click me, then Handoff, to write today's notes.", near: self.panel.frame, for: 12)
+            }
+        }
+    }
+
+    /// Puts a prompt (or `/lavi handoff`'s draft) in the session's message box through the mod. You still press Enter.
+    /// No answer within 2.5 s (the session is closed, busy in a dialog, or has no box): the clipboard instead.
+    func sendToSession(_ text: String?, handoff: Bool = false) {
+        guard let s = sessions.first, isSessionID(s.id), s.status != "ended" else {
+            return handoff ? copy("/lavi handoff") : copy(text ?? "")
+        }
+        let id = UUID().uuidString
+        var req: [String: Any] = ["to": s.id, "at": Date().timeIntervalSince1970 * 1000, "id": id]
+        if handoff { req["action"] = "handoff" } else { req["text"] = text ?? "" }
+        guard let data = try? JSONSerialization.data(withJSONObject: req), (try? data.write(to: fillFile, options: .atomic)) != nil else { return copy(text ?? "") }
+        let started = Date()
+        fillTimer?.invalidate()
+        fillTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] t in
+            guard let self else { return t.invalidate() }
+            let ack = (try? Data(contentsOf: fillAckFile)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            if ack?["id"] as? String == id {
+                t.invalidate()
+                if ack?["ok"] as? Bool == true {
+                    // Bring that session forward in the Claude app so you can see the draft.
+                    if let app = s.appId, isAppSessionID(app), let url = URL(string: "claude://claude.ai/epitaxy/\(app)") { NSWorkspace.shared.open(url) }
+                    self.bubble.flash(handoff ? "drafting your handoff…" : "it's in your message box!",
+                                      detail: handoff ? "give me a few seconds. it lands in \(s.project)'s message box for you to review." : "tweak it if you want, then hit enter.",
+                                      place: (s.project, s.branch), near: self.panel.frame, for: 4)
+                    self.voice.say(handoff ? "handoff" : "sent", byYou: true)
+                } else { self.copy(handoff ? "/lavi handoff" : text ?? "") }
+            } else if Date().timeIntervalSince(started) > 2.5 {
+                t.invalidate()
+                self.copy(handoff ? "/lavi handoff" : text ?? "")
             }
         }
     }
@@ -729,161 +863,90 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: menu
 
-    /// `at`: where you clicked; nil from the hotkey (opens just above Lavi).
-    func showMenu(at point: NSPoint?) {
+    /// Click (or ⌃⌥L): Lavi's menu, a speech-bubble card beside him. Clicking him again closes it.
+    func showMenu() {
         bubble.orderOut(nil)
-        if point == nil { NSApp.activate(ignoringOtherApps: true) }
+        if menuPanel.isVisible { menuPanel.close(); return }
         if let top = sessions.first?.steps.first?.id, sessions.first?.status == "idle", view.mood != "sleepy" {
             voice.say(top == "next" ? "allgood" : "advice-\(top)", byYou: true)
         } else {
             voice.say("allgood", byYou: true)
         }
-        let menu = NSMenu()
-        if let s = sessions.first {
-            menu.addItem(header("\(s.project) · \(s.branch.isEmpty ? "no git" : s.branch)"))
-            for (i, step) in s.steps.enumerated() {
-                let item = NSMenuItem(title: "\(i + 1). \(step.text)", action: nil, keyEquivalent: "")
-                item.toolTip = step.why
-                // Ready-to-send prompts: copied, so you paste them into the session and press Enter yourself.
-                if let snippets = step.snippets, !snippets.isEmpty {
-                    let sub = NSMenu()
-                    sub.addItem(header("copy a prompt, then paste it in Claude"))
-                    for sn in snippets {
-                        let it = action(sn.label, #selector(copySnippet(_:)), sn.text)
-                        it.toolTip = sn.text
-                        sub.addItem(it)
-                    }
-                    item.submenu = sub
-                }
-                menu.addItem(item)
-            }
-        } else {
-            menu.addItem(header("nothing going on right now"))
-        }
-        // The one-click deep check: a full QA pass + security audit that fixes as it goes and ends in a report.
-        let qa = NSMenuItem(title: "🛡 Full QA + security pass", action: nil, keyEquivalent: "")
-        let qm = NSMenu()
-        qm.addItem(header("Claude tests, audits, fixes, then reports"))
-        if let s = sessions.first { qm.addItem(action("New session in \(s.project), prompt ready", #selector(openURL(_:)), newSessionURL(folder: s.cwd, prompt: qaPrompt()))) }
-        qm.addItem(action("Copy the prompt", #selector(copySnippet(_:)), qaPrompt()))
-        qa.submenu = qm
-        menu.addItem(.separator())
-        menu.addItem(qa)
-        menu.addItem(action("Sessions waiting on you", #selector(openURL(_:)), "claude://code/needs-input"))
-        menu.addItem(action("New Claude Code session", #selector(openURL(_:)), "claude://code/new"))
-        menu.addItem(.separator())
-
         appIDs = appSessionIDs()
-        let live = Set(sessions.map(\.id))
-        if !sessions.isEmpty {
-            menu.addItem(header("Live"))
-            for s in sessions { menu.addItem(sessionItem(id: s.id, cwd: s.cwd, title: "\(s.status == "busy" ? "● " : "")\(s.project) — \(s.steps.first?.text ?? "")")) }
+        var d = MenuData(voiceOn: voice.isOn)
+        if let s = sessions.first {
+            d.project = s.project; d.branch = s.branch
+            d.tips = s.steps.map { .init(text: $0.text, why: $0.why, snippets: ($0.snippets ?? []).map { ($0.label, $0.text) }) }
         }
-        menu.addItem(header("Recent"))
-        let fmt = RelativeDateTimeFormatter(); fmt.unitsStyle = .short
-        for t in loadTranscripts() where !live.contains(t.id) {
-            let project = (t.cwd as NSString).lastPathComponent
-            menu.addItem(sessionItem(id: t.id, cwd: t.cwd, title: "\(project) · \(t.title) · \(fmt.localizedString(for: t.modified, relativeTo: Date()))"))
-        }
-        if !checkIn.isEmpty {
-            menu.addItem(header("Across your projects"))
-            for p in checkIn.prefix(12) {
-                let it = action(Projects.summary(p), #selector(openURL(_:)), newSessionURL(folder: p.path, prompt: nil))
-                it.toolTip = "open a new Claude session in \(p.path)"
-                menu.addItem(it)
-            }
-        }
-        menu.addItem(action("Check my projects now", #selector(checkProjectsNow), nil))
-        menu.addItem(.separator())
-        let sizeItem = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
-        let sizeMenu = NSMenu()
-        for (name, pts) in sizes {
-            let item = action(name, #selector(setSize(_:)), pts)
-            item.state = pts == size ? .on : .off
-            sizeMenu.addItem(item)
-        }
-        sizeItem.submenu = sizeMenu
-        menu.addItem(sizeItem)
-        menu.addItem(action("Hide for 1 hour", #selector(hideHour), nil))
-        let voiceItem = NSMenuItem(title: "Voice", action: nil, keyEquivalent: "")
-        let vm = NSMenu()
-        let onItem = action("Lavi talks", #selector(toggleVoice), nil); onItem.state = voice.isOn ? .on : .off; vm.addItem(onItem)
-        for (name, v) in [("Volume: low", Float(0.3)), ("Volume: medium", 0.6), ("Volume: high", 1.0)] as [(String, Float)] {
-            let it = action(name, #selector(setVolume(_:)), v); it.state = abs(voice.volume - v) < 0.01 ? .on : .off; vm.addItem(it)
-        }
-        let qh = action("Quiet 10pm–8am", #selector(toggleQuietHours), nil); qh.state = voice.quietHoursOn ? .on : .off; vm.addItem(qh)
-        voiceItem.submenu = vm
-        menu.addItem(voiceItem)
-        let settings = action("Settings…", #selector(openSettings), nil); settings.keyEquivalent = ","
-        menu.addItem(settings)
-        menu.addItem(action("Quit Lavi", #selector(NSApplication.terminate(_:)), nil))
-        menu.popUp(positioning: nil, at: point ?? NSPoint(x: view.bounds.midX, y: view.bounds.maxY), in: view)
-    }
-
-    func header(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.boldSystemFont(ofSize: 12)])
-        item.isEnabled = false
-        return item
-    }
-
-    func action(_ title: String, _ sel: Selector, _ payload: Any?) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
-        item.target = sel == #selector(NSApplication.terminate(_:)) ? NSApp : self
-        item.representedObject = payload
-        return item
-    }
-
-    func sessionItem(id: String, cwd: String, title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        // Ids come from file names and session files on disk: only real session ids get resume actions,
+        // Ids come from file names and session files on disk: only real session ids become rows,
         // so a crafted file can't turn "Resume in Terminal" into a shell command.
-        guard isSessionID(id) else { item.isEnabled = false; return item }
-        let sub = NSMenu()
-        // A session that already lives in the desktop app opens directly; a CLI-only one is imported (claude://resume).
-        let open = appIDs[id].map { "claude://claude.ai/epitaxy/\($0)" } ?? "claude://resume?session=\(id)"
-        sub.addItem(action(appIDs[id] == nil ? "Open in Claude app (imports it)" : "Open in Claude app", #selector(openURL(_:)), open))
-        sub.addItem(action("Resume in Terminal", #selector(resumeInTerminal(_:)), [id, cwd]))
-        sub.addItem(action("Copy resume command", #selector(copyResume(_:)), [id, cwd]))
-        item.submenu = sub
-        return item
+        // Sessions waiting on you go first.
+        d.live = sessions.filter { isSessionID($0.id) }.sorted { ($0.waiting != nil ? 0 : 1) < ($1.waiting != nil ? 0 : 1) }.map {
+            .init(id: $0.id, cwd: $0.cwd, title: $0.project,
+                  subtitle: $0.waiting.map { $0.kind == "question" ? "Claude asked you a question" : "Claude needs your OK" } ?? $0.steps.first?.text ?? $0.status,
+                  busy: $0.status == "busy" && $0.waiting == nil, inApp: appIDs[$0.id] != nil, waiting: $0.waiting != nil && $0.status != "ended")
+        }
+        let live = Set(sessions.map(\.id))
+        let fmt = RelativeDateTimeFormatter(); fmt.unitsStyle = .short
+        d.recent = loadTranscripts().filter { !live.contains($0.id) && isSessionID($0.id) }.map {
+            .init(id: $0.id, cwd: $0.cwd, title: ($0.cwd as NSString).lastPathComponent, subtitle: "\($0.title) · \(fmt.localizedString(for: $0.modified, relativeTo: Date()))", inApp: appIDs[$0.id] != nil)
+        }
+        d.projects = checkIn.prefix(12).map { .init(id: $0.path, cwd: $0.path, title: $0.name, subtitle: Projects.summary($0).components(separatedBy: ": ").last ?? "") }
+
+        func done(_ f: @escaping () -> Void) -> () -> Void { { [weak self] in self?.menuPanel.close(); f() } }
+        let focus = sessions.first
+        var a = MenuActions()
+        a.send = { [weak self] t in self?.menuPanel.close(); self?.sendToSession(t) }
+        a.handoff = done { [weak self] in self?.sendToSession(nil, handoff: true) }
+        a.open = { [weak self] r in self?.menuPanel.close(); self?.open(self?.appIDs[r.id].map { "claude://claude.ai/epitaxy/\($0)" } ?? "claude://resume?session=\(r.id)") }
+        a.resumeInTerminal = { [weak self] r in self?.menuPanel.close(); self?.resumeInTerminal(id: r.id, cwd: r.cwd) }
+        a.copyResume = { [weak self] r in self?.menuPanel.close(); self?.resumeCommand(id: r.id, cwd: r.cwd).map { self?.copy($0, announce: false) } }
+        a.openProject = { [weak self] r in self?.menuPanel.close(); self.map { $0.open($0.newSessionURL(folder: r.cwd, prompt: nil)) } }
+        a.qa = done { [weak self] in
+            guard let self else { return }
+            if let focus { self.open(self.newSessionURL(folder: focus.cwd, prompt: self.qaPrompt())) } else { self.copy(self.qaPrompt()) }
+        }
+        a.qaCopy = done { [weak self] in self.map { $0.copy($0.qaPrompt()) } }
+        // One session waiting: straight to it. Otherwise the app's own waiting list.
+        a.waiting = done { [weak self] in
+            guard let self else { return }
+            let blocked = self.sessions.filter { $0.waiting != nil && $0.status != "ended" }
+            if blocked.count == 1, let app = blocked[0].appId, isAppSessionID(app) { self.open("claude://claude.ai/epitaxy/\(app)") }
+            else { self.open("claude://code/needs-input") }
+        }
+        a.newSession = done { [weak self] in self?.open("claude://code/new") }
+        a.checkProjects = done { [weak self] in self?.morningCheckIn(force: true) }
+        a.toggleVoice = done { [weak self] in self?.voice.isOn.toggle() }
+        a.hide = done { [weak self] in self?.hideHour() }
+        a.settings = done { SettingsWindow.show() }
+        a.quit = { NSApp.terminate(nil) }
+        view.hop(7)
+        menuPanel.show(d, a, beside: panel.frame)
     }
 
-    @objc func openURL(_ sender: NSMenuItem) {
-        if let s = sender.representedObject as? String, let url = URL(string: s) { NSWorkspace.shared.open(url) }
+    func open(_ s: String) { if let url = URL(string: s) { NSWorkspace.shared.open(url) } }
+
+    func resumeCommand(id: String, cwd: String) -> String? {
+        guard isSessionID(id) else { return nil }
+        let quoted = "'" + cwd.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "cd \(quoted) && claude --resume '\(id)'"
     }
 
-    func resumeCommand(_ sender: NSMenuItem) -> String? {
-        guard let p = sender.representedObject as? [String], p.count == 2 else { return nil }
-        let quoted = "'" + p[1].replacingOccurrences(of: "'", with: "'\\''") + "'"
-        guard isSessionID(p[0]) else { return nil }
-        return "cd \(quoted) && claude --resume '\(p[0])'"
-    }
-
-    @objc func resumeInTerminal(_ sender: NSMenuItem) {
-        guard let cmd = resumeCommand(sender) else { return }
+    func resumeInTerminal(id: String, cwd: String) {
+        guard let cmd = resumeCommand(id: id, cwd: cwd) else { return }
         let escaped = cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let script = "tell application \"Terminal\" to do script \"\(escaped)\"\ntell application \"Terminal\" to activate"
         var err: NSDictionary?
         NSAppleScript(source: script)?.executeAndReturnError(&err)
     }
 
-    @objc func copySnippet(_ sender: NSMenuItem) {
-        guard let text = sender.representedObject as? String else { return }
+    func copy(_ text: String, announce: Bool = true) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        guard announce else { return }
         bubble.flash("copied!", detail: "paste it into Claude (⌘V), tweak it, then hit enter.", near: panel.frame, for: 3)
         voice.say("copied", byYou: true)
     }
-
-    @objc func copyResume(_ sender: NSMenuItem) {
-        guard let cmd = resumeCommand(sender) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(cmd, forType: .string)
-    }
-
-    @objc func openSettings() { SettingsWindow.show() }
-    @objc func checkProjectsNow() { morningCheckIn(force: true) }
 
     /// The mod keeps the canonical QA prompt in qa-prompt.txt; this is the fallback.
     func qaPrompt() -> String {
@@ -898,25 +961,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return c.url!.absoluteString
     }
 
-    @objc func toggleVoice() { voice.isOn.toggle() }
-    @objc func toggleQuietHours() { voice.quietHoursOn.toggle() }
-    @objc func setVolume(_ sender: NSMenuItem) {
-        if let v = sender.representedObject as? Float { voice.volume = v; voice.say("allgood", byYou: true) }
-    }
-
-    @objc func setSize(_ sender: NSMenuItem) {
-        guard let pts = sender.representedObject as? CGFloat else { return }
-        UserDefaults.standard.set(Double(pts), forKey: "size")
-        appliedSize = pts
-        let f = panel.frame
-        panel.setFrame(NSRect(x: f.maxX - pts, y: f.minY, width: pts, height: pts), display: true)
-        view.frame = NSRect(x: 0, y: 0, width: pts, height: pts)
-        UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: "origin")
-    }
-
-    @objc func hideHour() {
+    func hideHour() {
         hiddenUntil = Date().addingTimeInterval(3600)
-        panel.orderOut(nil); bubble.orderOut(nil)
+        panel.orderOut(nil); bubble.orderOut(nil); menuPanel.close()
     }
 }
 
