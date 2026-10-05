@@ -1,6 +1,6 @@
 export type Mood = 'worried' | 'nudge' | 'calm' | 'happy' | 'busy'
 /** A ready-to-send prompt the buddy offers; picking one drops it in the message box (you still press Enter). */
-export type Snippet = { label: string; text: string }
+export type Snippet = { label: string; text: string; action?: 'handoff' }
 export type Step = { id: string; text: string; why: string; mood: Mood; snippets: Snippet[] }
 /** The model's take from Ask buddy: the answer, plus the prompts it suggests. */
 export type Answer = { text: string; snippets: Snippet[] }
@@ -16,6 +16,25 @@ export type Signals = {
   lastTest: 'pass' | 'fail' | null
   editsSinceTest: number
   contextPercent: number
+  lastLint: 'pass' | 'fail' | null
+  /** commits on the default branch this branch doesn't have (from the last fetch) */
+  behind: number
+  ci: 'pass' | 'fail' | 'pending' | null
+  prNumber: number | null
+  changesRequested: boolean
+  ciCheckedAt: number
+  /** something worth a little celebration, for the desktop robot */
+  celebrate: { kind: 'tests' | 'push'; at: number } | null
+}
+
+/** A repo's optional `.lavi.json`. */
+export type LaviConfig = {
+  /** no voice, no pings for this repo */
+  quiet?: boolean
+  testCommand?: string
+  maxDirtyFiles?: number
+  maxMinutesSinceCommit?: number
+  contextWrapPercent?: number
 }
 
 /** Phone-ping bookkeeping for one session. */
@@ -36,6 +55,8 @@ export type SessionFile = {
   mood: Mood
   steps: Step[]
   updatedAt: number
+  quiet?: boolean
+  celebrate?: { kind: 'tests' | 'push'; at: number } | null
 }
 
 declare module 'claude-code' {

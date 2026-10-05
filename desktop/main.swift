@@ -8,13 +8,18 @@ let home = FileManager.default.homeDirectoryForCurrentUser
 let buddyDir = home.appendingPathComponent(".claude/codebuddy/sessions")
 let projectsDir = home.appendingPathComponent(".claude/projects")
 let claudeBundleID = "com.anthropic.claudefordesktop"
-let sizes: [(String, CGFloat)] = [("Small", 84), ("Medium", 110), ("Large", 140)]
+let sizes: [(String, CGFloat)] = [("Small", 84), ("Medium", 110), ("Large", 140), ("XL", 180), ("XXL", 240)]
 var size: CGFloat { let v = UserDefaults.standard.double(forKey: "size"); return v > 0 ? v : 110 }
-/// Idle animation frames (idle_00.png …) bundled beside the moods; played in the calm mood.
-let idleFrames: [NSImage] = ((try? FileManager.default.contentsOfDirectory(atPath: Bundle.main.resourcePath ?? "")) ?? [])
-    .filter { $0.hasPrefix("idle_") && $0.hasSuffix(".png") }.sorted()
-    .compactMap { NSImage(contentsOfFile: (Bundle.main.resourcePath ?? "") + "/" + $0) }
+/// Idle animations per mood (idle-<mood>_00.png …), made with desktop/tools/idle_frames.py.
+let idleSets: [String: [NSImage]] = {
+    let dir = Bundle.main.resourcePath ?? ""
+    let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasPrefix("idle-") && $0.hasSuffix(".png") }.sorted()
+    return Dictionary(grouping: names) { String($0.dropFirst(5).prefix { $0 != "_" }) }
+        .mapValues { $0.compactMap { NSImage(contentsOfFile: dir + "/" + $0) } }
+}()
 let idleFPS = 8.0 // frames were sampled at 8 fps from the clip
+let sayFile = home.appendingPathComponent(".claude/codebuddy/say.json")
+let qaFile = home.appendingPathComponent(".claude/codebuddy/qa-prompt.txt")
 let sleepyAfter: Double = 30 * 60 * 1000 // ms with no activity before the robot dozes off
 
 /// Mood art bundled in Contents/Resources (built from desktop/art). Missing art falls back to the drawn blob.
@@ -25,9 +30,11 @@ let art: [String: NSImage] = Dictionary(uniqueKeysWithValues:
 
 struct Snippet: Decodable { let label: String; let text: String }
 struct Step: Decodable { let id: String?; let text: String; let why: String; let snippets: [Snippet]? }
+struct Celebrate: Decodable { let kind: String; let at: Double }
 struct BuddySession: Decodable {
     let id: String, cwd: String, project: String, branch: String
     let status: String, mood: String, steps: [Step], updatedAt: Double
+    let quiet: Bool?, celebrate: Celebrate?
 }
 struct Transcript { let id: String; let cwd: String; let title: String; let modified: Date }
 
@@ -40,6 +47,16 @@ func loadBuddySessions() -> [BuddySession] {
         .compactMap { try? JSONDecoder().decode(BuddySession.self, from: Data(contentsOf: $0)) }
         .filter { $0.status != "ended" && $0.updatedAt > dayAgo }
         .sorted { $0.updatedAt > $1.updatedAt }
+}
+
+/// Housekeeping: drop session files untouched for 7 days, and ended ones after a day.
+func pruneSessions() {
+    let fm = FileManager.default
+    for f in (try? fm.contentsOfDirectory(at: buddyDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] where f.pathExtension == "json" {
+        let age = Date().timeIntervalSince((try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date())
+        let ended = age > 86_400 && ((try? JSONDecoder().decode(BuddySession.self, from: Data(contentsOf: f)))?.status == "ended")
+        if age > 7 * 86_400 || ended { try? fm.removeItem(at: f) }
+    }
 }
 
 /// Most recent transcripts. Reads only the head of each file for cwd and first prompt.
@@ -99,21 +116,22 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
     var onFinish: (() -> Void)?
 
     var isOn: Bool {
-        get { UserDefaults.standard.object(forKey: "voiceOn") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "voiceOn") }
+        get { Prefs.voiceOn }
+        set { Prefs.d.set(newValue, forKey: "voiceOn") }
     }
     var volume: Float {
-        get { UserDefaults.standard.object(forKey: "voiceVolume") as? Float ?? 0.6 }
-        set { UserDefaults.standard.set(newValue, forKey: "voiceVolume"); player?.volume = newValue }
+        get { Prefs.volume }
+        set { Prefs.d.set(Double(newValue), forKey: "voiceVolume"); player?.volume = newValue }
     }
     var quietHoursOn: Bool {
-        get { UserDefaults.standard.object(forKey: "quietHours") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "quietHours") }
+        get { Prefs.quietHours }
+        set { Prefs.d.set(newValue, forKey: "quietHours") }
     }
     let quietFrom = 22, quietUntil = 8 // ponytail: fixed 10pm–8am; make it a setting if it ever needs to move
-    var isQuietHour: Bool {
+    /// Quiet hours, a calendar event, or a Focus mode.
+    var isQuietNow: Bool {
         let h = Calendar.current.component(.hour, from: Date())
-        return quietHoursOn && (h >= quietFrom || h < quietUntil)
+        return (quietHoursOn && (h >= quietFrom || h < quietUntil)) || Quiet.inMeeting || Quiet.inFocus
     }
     var isSpeaking: Bool { player?.isPlaying ?? false }
 
@@ -130,8 +148,19 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
     @discardableResult
     func say(_ id: String, byYou: Bool = false, skipGap: Bool = false) -> TimeInterval? {
         guard isOn else { return nil }
-        if !byYou && (isQuietHour || (!skipGap && Date().timeIntervalSince(lastSpoke) < minGap)) { return nil }
+        if !byYou && (isQuietNow || (!skipGap && Date().timeIntervalSince(lastSpoke) < minGap)) { return nil }
         guard let url = files(for: id).randomElement(), let p = try? AVAudioPlayer(contentsOf: url) else { return nil }
+        return start(p)
+    }
+
+    /// Plays audio you asked for (a read-aloud answer): mute still applies, nothing else.
+    @discardableResult
+    func play(_ data: Data) -> TimeInterval? {
+        guard isOn, let p = try? AVAudioPlayer(data: data) else { return nil }
+        return start(p)
+    }
+
+    private func start(_ p: AVAudioPlayer) -> TimeInterval {
         player?.stop()
         p.volume = volume
         p.isMeteringEnabled = true
@@ -163,7 +192,10 @@ final class BuddyView: NSView {
     var mood = "calm" { didSet { needsDisplay = true } }
     var phase: CGFloat = 0
     var isBlinking = false
-    var idleFrame: Int? // set while the idle animation plays
+    var idleImage: NSImage? // the current idle-animation frame for this mood, if it has one
+    var bounceStart: Date? // a little hop: after a drag, or when celebrating
+    var bounceAmp: CGFloat = 6
+    var onDragEnd: (() -> Void)?
     var mouth: Int? // 0 closed, 1 half, 2 open: set while Lavi speaks
     var onClick: ((NSEvent) -> Void)?
     var onHover: ((Bool) -> Void)?
@@ -186,9 +218,22 @@ final class BuddyView: NSView {
         w.setFrameOrigin(NSPoint(x: w.frame.origin.x + now.x - start.x, y: w.frame.origin.y + now.y - start.y))
     }
     override func mouseUp(with e: NSEvent) {
-        if didDrag { UserDefaults.standard.set(NSStringFromPoint(window!.frame.origin), forKey: "origin") }
+        if didDrag { onDragEnd?(); hop(6) }
         else { onClick?(e) }
         dragStart = nil
+    }
+
+    func hop(_ amp: CGFloat) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        bounceAmp = amp; bounceStart = Date()
+    }
+
+    /// A damped bounce: quick hops that settle within about 0.8 s.
+    var bounceOffset: CGFloat {
+        guard let t0 = bounceStart else { return 0 }
+        let t = Date().timeIntervalSince(t0)
+        if t > 0.8 { return 0 }
+        return bounceAmp * CGFloat(exp(-5 * t) * abs(sin(t * 14)))
     }
 
     var color: NSColor {
@@ -202,10 +247,10 @@ final class BuddyView: NSView {
     }
 
     override func draw(_ dirty: NSRect) {
-        let bob = sin(phase) * 3
+        let bob = sin(phase) * 3 + bounceOffset
         // Blink only has a matching frame for the calm pose.
         let frame = (isBlinking && (mood == "calm")) ? "blink" : mood
-        let idle = mood == "calm" ? idleFrame.map { idleFrames[$0 % idleFrames.count] } : nil
+        let idle = idleImage
         // While talking: the calm pose with its mouth moving to the audio.
         let talking: NSImage? = mouth.flatMap { m in m == 0 ? art["calm"] : talkFrames.isEmpty ? nil : talkFrames[min(m, talkFrames.count) - 1] }
         if let img = talking ?? idle ?? art[frame] ?? art["calm"] {
@@ -360,6 +405,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var isFirstTick = true
     var lastGreeting = Date.distantPast
     var holdVisibleUntil = Date.distantPast
+    let hotkey = Hotkey()
+    var seenCelebrate: [String: Double] = [:]
+    var celebrateUntil = Date.distantPast
+    var lastSayAt: Double = -1 // read-aloud requests already handled (-1: not read yet)
+    var activeSince: Date? // steady work, for break nudges
+    var lastBreakNudge = Date()
+    var checkIn: [ProjectState] = [] // last morning check-in
+    var ticks = 0
 
     func applicationDidFinishLaunching(_ n: Notification) {
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
@@ -369,8 +422,19 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let saved = UserDefaults.standard.string(forKey: "origin").map(NSPointFromString)
         let vf = NSScreen.main!.visibleFrame
         panel.setFrameOrigin(saved ?? NSPoint(x: vf.maxX - size - 24, y: vf.minY + 24))
+        clampOnScreen()
+        view.onDragEnd = { [weak self] in self?.clampOnScreen() }
+        pruneSessions()
+        // Displays changed (monitor unplugged, resolution): make sure Lavi is still somewhere you can see.
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.clampOnScreen() }
+        // Settings window edits land in UserDefaults; apply size and hotkey changes live.
+        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.applySettings() }
+        Hotkey.onPress = { [weak self] in self?.showMenu(at: nil) }
+        applySettings()
+        // `open ~/Applications/CodeBuddy.app --args --settings` opens Settings straight away.
+        if CommandLine.arguments.contains("--settings") { DispatchQueue.main.async { SettingsWindow.show() } }
         view.setAccessibilityRole(.button)
-        view.onClick = { [weak self] e in self?.showMenu(e) }
+        view.onClick = { [weak self] e in self?.showMenu(at: e.locationInWindow) }
         view.onHover = { [weak self] inside in
             guard let self else { return }
             if inside, let s = self.sessions.first, let step = s.steps.first {
@@ -389,6 +453,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.tick()
             guard self.panel.isVisible else { return } // hidden for an hour, etc.
             self.lastGreeting = Date() // so a new session file doesn't greet twice
+            if self.morningCheckIn() { return }
             if self.voice.say("greeting", skipGap: true) != nil {
                 self.bubble.show("hey, welcome back!", detail: "lavi here. click me any time for what's next.", near: self.panel.frame)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.bubble.orderOut(nil) }
@@ -418,8 +483,105 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.bubble.orderOut(nil) }
         }
         lastMood = key
-        if panel.isVisible { speakIfSomethingChanged() }
+        if Date() < celebrateUntil { view.mood = "happy" }
+        if panel.isVisible { speakIfSomethingChanged(); breakNudge(); readAloudIfAsked() }
+        if isFirstTick && panel.isVisible { _ = morningCheckIn() }
         isFirstTick = false
+        ticks += 1
+        if ticks % 1800 == 0 { pruneSessions() } // hourly
+    }
+
+    /// Pull Lavi back onto a visible screen (after a monitor change, a resize, or a wild drag).
+    func clampOnScreen() {
+        let f = panel.frame
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        if !screens.contains(where: { $0.intersection(f).width > f.width * 0.6 && $0.intersection(f).height > f.height * 0.6 }) {
+            let vf = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+            let x = min(max(f.minX, vf.minX), vf.maxX - f.width), y = min(max(f.minY, vf.minY), vf.maxY - f.height)
+            panel.setFrameOrigin(screens.contains(where: { $0.contains(NSPoint(x: f.midX, y: f.midY)) }) ? NSPoint(x: x, y: y)
+                                 : NSPoint(x: vf.maxX - f.width - 24, y: vf.minY + 24))
+        }
+        UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: "origin")
+    }
+
+    var appliedSize: CGFloat = 0
+    func applySettings() {
+        if size != appliedSize {
+            appliedSize = size
+            let f = panel.frame
+            panel.setFrame(NSRect(x: f.maxX - size, y: f.minY, width: size, height: size), display: true)
+            view.frame = NSRect(x: 0, y: 0, width: size, height: size)
+            clampOnScreen()
+        }
+        Prefs.hotkeyOn ? hotkey.register() : hotkey.unregister()
+    }
+
+    /// First time Lavi's around on a new day: a sweep of your projects for loose ends. True if it ran.
+    @discardableResult
+    func morningCheckIn(force: Bool = false) -> Bool {
+        let today = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .none)
+        guard force || (Prefs.morningCheckIn && Prefs.d.string(forKey: "lastCheckInDay") != today) else { return false }
+        Prefs.d.set(today, forKey: "lastCheckInDay")
+        DispatchQueue.global(qos: .utility).async {
+            let found = Projects.scan()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.checkIn = found
+                self.voice.say("morning", byYou: force, skipGap: true)
+                let lines = found.prefix(4).map(Projects.summary)
+                self.bubble.show(found.isEmpty ? "morning! everything's committed and pushed." : "morning! here's where things stand.",
+                                 detail: found.isEmpty ? "clean slate across \((Prefs.projectsRoot as NSString).lastPathComponent)." :
+                                    lines.joined(separator: "\n") + (found.count > 4 ? "\n+\(found.count - 4) more in my menu" : ""),
+                                 near: self.panel.frame)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 9) { [weak self] in self?.bubble.orderOut(nil) }
+            }
+        }
+        return true
+    }
+
+    /// After a long stretch of steady work, suggest a break (off by default).
+    func breakNudge() {
+        let idle = secondsSinceInput()
+        if idle > 300 { activeSince = nil; return } // you already took a break
+        if activeSince == nil { activeSince = Date() }
+        guard Prefs.breakNudges, let since = activeSince,
+              Date().timeIntervalSince(since) > Prefs.breakMinutes * 60,
+              Date().timeIntervalSince(lastBreakNudge) > Prefs.breakMinutes * 60 else { return }
+        lastBreakNudge = Date(); activeSince = Date()
+        voice.say("break")
+        bubble.show("stretch break?", detail: "you've been at it \(Int(Prefs.breakMinutes)) min straight. stand up, grab water, look far away for a minute.", near: panel.frame)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.bubble.orderOut(nil) }
+    }
+
+    /// The mod's "read it to me" button drops a request in say.json; read it out in Lavi's live voice.
+    func readAloudIfAsked() {
+        guard let data = try? Data(contentsOf: sayFile),
+              let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = req["text"] as? String, let at = req["at"] as? Double else { return }
+        if lastSayAt < 0 { lastSayAt = at; return } // don't replay an old request at launch
+        guard at > lastSayAt else { return }
+        lastSayAt = at
+        bubble.show("reading it out…", detail: String(text.prefix(140)) + (text.count > 140 ? "…" : ""), near: panel.frame)
+        Speech.synthesize(text) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let mp3):
+                let secs = self.voice.play(mp3) ?? 3
+                DispatchQueue.main.asyncAfter(deadline: .now() + secs + 0.5) { [weak self] in self?.bubble.orderOut(nil) }
+            case .failure(let e):
+                self.bubble.show("can't read it out yet", detail: e.message, near: self.panel.frame)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 7) { [weak self] in self?.bubble.orderOut(nil) }
+            }
+        }
+    }
+
+    func celebrate(_ kind: String) {
+        celebrateUntil = Date().addingTimeInterval(4)
+        view.mood = "happy"
+        view.hop(14)
+        voice.say(kind == "push" ? "celebrate-push" : "celebrate-tests")
+        bubble.show(kind == "push" ? "pushed! 🚀" : "tests are green again! 🎉", detail: kind == "push" ? "your work's backed up on the remote." : "nice fix.", near: panel.frame)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.bubble.orderOut(nil) }
     }
 
     /// Greeting, "done" and advice lines, decided from how the session files changed since the last tick.
@@ -431,10 +593,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var busySince = before?.busySince
             if s.status == "busy" && busySince == nil { busySince = now }
             defer { seen[s.id] = (s.status, top, s.status == "busy" ? busySince : nil) }
+            let cAt = s.celebrate?.at ?? 0
+            defer { seenCelebrate[s.id] = max(seenCelebrate[s.id] ?? 0, cAt) }
             if isFirstTick { continue } // don't chatter about sessions that were already open
+            if s.quiet == true { continue } // a repo's .lavi.json asked for quiet
 
-            if before == nil {
-                if now.timeIntervalSince(lastGreeting) > 600 { lastGreeting = now; voice.say("greeting") }
+            if cAt > (seenCelebrate[s.id] ?? 0), before != nil, Date().timeIntervalSince1970 * 1000 - cAt < 120_000 {
+                celebrate(s.celebrate!.kind)
+            } else if before == nil {
+                if now.timeIntervalSince(lastGreeting) > 600 { lastGreeting = now; if !morningCheckIn() { voice.say("greeting") } }
             } else if before!.status == "busy" && s.status == "idle",
                       let start = before!.busySince, now.timeIntervalSince(start) >= 180, secondsSinceInput() < 120 {
                 voice.say("done") // a long task finished while you're here
@@ -445,37 +612,40 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func animate() {
+        if view.bounceStart != nil { view.needsDisplay = true }
         if voice.isSpeaking {
             let l = voice.level()
             let m = l < 0.35 ? 0 : l < 0.6 ? 1 : 2
             if view.mouth != m { view.mouth = m; view.needsDisplay = true }
         }
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        guard panel.isVisible, !reduce else { if view.phase != 0 || view.idleFrame != nil { view.phase = 0; view.idleFrame = nil; view.needsDisplay = true }; return }
+        guard panel.isVisible, !reduce else { if view.phase != 0 || view.idleImage != nil { view.phase = 0; view.idleImage = nil; view.needsDisplay = true }; return }
         view.phase += view.mood == "busy" ? 0.25 : 0.06
-        // The idle clip has its own motion (and blink), so it replaces the bob in the calm mood.
-        if view.mood == "calm" && !idleFrames.isEmpty {
+        // A mood with an idle clip (calm, happy, worried) plays it instead of the bob.
+        if let frames = idleSets[view.mood], !frames.isEmpty {
             view.phase = 0
             // Ping-pong: forward through the clip, then back, so the loop never jumps.
-            let n = idleFrames.count, cycle = max(1, 2 * n - 2)
+            let n = frames.count, cycle = max(1, 2 * n - 2)
             let t = Int(Date().timeIntervalSince1970 * idleFPS) % cycle
-            view.idleFrame = t < n ? t : cycle - t
+            view.idleImage = frames[t < n ? t : cycle - t]
         } else {
-            view.idleFrame = nil
+            view.idleImage = nil
         }
         view.needsDisplay = true
     }
 
     func blink() {
-        if view.idleFrame != nil { return } // the idle clip blinks on its own
+        if view.idleImage != nil { return } // the idle clip blinks on its own
         view.isBlinking = true; view.needsDisplay = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.view.isBlinking = false; self?.view.needsDisplay = true }
     }
 
     // MARK: menu
 
-    func showMenu(_ e: NSEvent) {
+    /// `at`: where you clicked; nil from the hotkey (opens just above Lavi).
+    func showMenu(at point: NSPoint?) {
         bubble.orderOut(nil)
+        if point == nil { NSApp.activate(ignoringOtherApps: true) }
         if let top = sessions.first?.steps.first?.id, sessions.first?.status == "idle", view.mood != "sleepy" {
             voice.say(top == "next" ? "allgood" : "advice-\(top)", byYou: true)
         } else {
@@ -503,7 +673,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             menu.addItem(header("nothing going on right now"))
         }
+        // The one-click deep check: a full QA pass + security audit that fixes as it goes and ends in a report.
+        let qa = NSMenuItem(title: "🛡 Full QA + security pass", action: nil, keyEquivalent: "")
+        let qm = NSMenu()
+        qm.addItem(header("Claude tests, audits, fixes, then reports"))
+        if let s = sessions.first { qm.addItem(action("New session in \(s.project), prompt ready", #selector(openURL(_:)), newSessionURL(folder: s.cwd, prompt: qaPrompt()))) }
+        qm.addItem(action("Copy the prompt", #selector(copySnippet(_:)), qaPrompt()))
+        qa.submenu = qm
         menu.addItem(.separator())
+        menu.addItem(qa)
         menu.addItem(action("Sessions waiting on you", #selector(openURL(_:)), "claude://code/needs-input"))
         menu.addItem(action("New Claude Code session", #selector(openURL(_:)), "claude://code/new"))
         menu.addItem(.separator())
@@ -519,6 +697,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let project = (t.cwd as NSString).lastPathComponent
             menu.addItem(sessionItem(id: t.id, cwd: t.cwd, title: "\(project) · \(t.title) · \(fmt.localizedString(for: t.modified, relativeTo: Date()))"))
         }
+        if !checkIn.isEmpty {
+            menu.addItem(header("Across your projects"))
+            for p in checkIn.prefix(12) {
+                let it = action(Projects.summary(p), #selector(openURL(_:)), newSessionURL(folder: p.path, prompt: nil))
+                it.toolTip = "open a new Claude session in \(p.path)"
+                menu.addItem(it)
+            }
+        }
+        menu.addItem(action("Check my projects now", #selector(checkProjectsNow), nil))
         menu.addItem(.separator())
         let sizeItem = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
         let sizeMenu = NSMenu()
@@ -539,8 +726,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let qh = action("Quiet 10pm–8am", #selector(toggleQuietHours), nil); qh.state = voice.quietHoursOn ? .on : .off; vm.addItem(qh)
         voiceItem.submenu = vm
         menu.addItem(voiceItem)
+        let settings = action("Settings…", #selector(openSettings), nil); settings.keyEquivalent = ","
+        menu.addItem(settings)
         menu.addItem(action("Quit Lavi", #selector(NSApplication.terminate(_:)), nil))
-        menu.popUp(positioning: nil, at: e.locationInWindow, in: view)
+        menu.popUp(positioning: nil, at: point ?? NSPoint(x: view.bounds.midX, y: view.bounds.maxY), in: view)
     }
 
     func header(_ title: String) -> NSMenuItem {
@@ -600,6 +789,22 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.setString(cmd, forType: .string)
     }
 
+    @objc func openSettings() { SettingsWindow.show() }
+    @objc func checkProjectsNow() { morningCheckIn(force: true) }
+
+    /// The mod keeps the canonical QA prompt in qa-prompt.txt; this is the fallback.
+    func qaPrompt() -> String {
+        (try? String(contentsOf: qaFile, encoding: .utf8)) ??
+            "do a full QA pass and security audit of this project, fix bugs along the way without committing, then give me a full report of what you checked, found (with severity), fixed, and what's left."
+    }
+
+    /// claude://code/new opens a new Claude Code session in a folder, optionally with a prompt typed in (not sent).
+    func newSessionURL(folder: String, prompt: String?) -> String {
+        var c = URLComponents(string: "claude://code/new")!
+        c.queryItems = [URLQueryItem(name: "folder", value: folder)] + (prompt.map { [URLQueryItem(name: "q", value: $0)] } ?? [])
+        return c.url!.absoluteString
+    }
+
     @objc func toggleVoice() { voice.isOn.toggle() }
     @objc func toggleQuietHours() { voice.quietHoursOn.toggle() }
     @objc func setVolume(_ sender: NSMenuItem) {
@@ -609,6 +814,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func setSize(_ sender: NSMenuItem) {
         guard let pts = sender.representedObject as? CGFloat else { return }
         UserDefaults.standard.set(Double(pts), forKey: "size")
+        appliedSize = pts
         let f = panel.frame
         panel.setFrame(NSRect(x: f.maxX - pts, y: f.minY, width: pts, height: pts), display: true)
         view.frame = NSRect(x: 0, y: 0, width: pts, height: pts)

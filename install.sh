@@ -41,11 +41,13 @@ rm -rf "$BUILD"; mkdir -p "$BUILD/Contents/MacOS"
 cp "$ROOT/desktop/Info.plist" "$BUILD/Contents/"
 mkdir -p "$BUILD/Contents/Resources" && cp "$ROOT"/desktop/art/*.png "$BUILD/Contents/Resources/"
 cp "$ROOT"/desktop/voice/*.mp3 "$BUILD/Contents/Resources/"
-swiftc -O -swift-version 5 "$ROOT/desktop/Buddy.swift" -o "$BUILD/Contents/MacOS/CodeBuddy"
+swiftc -O -swift-version 5 "$ROOT"/desktop/*.swift -o "$BUILD/Contents/MacOS/CodeBuddy"
 mkdir -p "$HOME/Applications"; rm -rf "$APP"; cp -R "$BUILD" "$APP"
 
 echo "Installing LaunchAgent…"
 launchctl bootout "gui/$UID/com.chadkraus.codebuddy" 2>/dev/null || true
+# bootout is asynchronous: wait until the old job is really gone, or bootstrap fails with an I/O error
+for _ in $(seq 1 20); do launchctl print "gui/$UID/com.chadkraus.codebuddy" >/dev/null 2>&1 || break; sleep 0.25; done
 sed "s|__BIN__|$APP/Contents/MacOS/CodeBuddy|" "$ROOT/desktop/com.chadkraus.codebuddy.plist" > "$AGENT"
 launchctl bootstrap "gui/$UID" "$AGENT"
 

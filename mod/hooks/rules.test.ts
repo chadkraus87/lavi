@@ -1,12 +1,13 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Signals } from '../types'
-import { advise, isCodeFile, isTestCommand, parseAnswer, parseGitStatus } from './rules'
+import { advise, isCodeFile, isLintCommand, isPushCommand, isTestCommand, parseAnswer, parseGitStatus, parsePr, QA_PROMPT, speakable } from './rules'
 
 const NOW = 1_800_000_000_000
 const base: Signals = {
   isGit: true, branch: 'feat', defaultBranch: 'main', dirtyFiles: 0, ahead: 0,
   lastCommitAt: NOW, lastTest: 'pass', editsSinceTest: 0, contextPercent: 10,
+  lastLint: null, behind: 0, ci: null, prNumber: null, changesRequested: false, ciCheckedAt: 0, celebrate: null,
 }
 const ids = (s: Partial<Signals>) => advise({ ...base, ...s }, NOW).steps.map(x => x.id)
 
@@ -72,4 +73,55 @@ test('Ask buddy replies split into advice and prompt buttons', () => {
     { label: 'just the text', text: 'just the text here please' },
   ])
   expect(parseAnswer('no prompts here').snippets).toEqual([])
+})
+
+test('CI, review, lint and rebase advice', () => {
+  expect(ids({ ci: 'fail', prNumber: 12 })).toEqual(['fix-ci'])
+  expect(advise({ ...base, ci: 'fail', prNumber: 12 }, NOW).steps[0]!.text).toBe('CI is red on PR #12.')
+  expect(ids({ ci: 'pending' })).toEqual(['next'])
+  expect(ids({ lastLint: 'fail' })).toEqual(['fix-lint'])
+  expect(ids({ changesRequested: true, prNumber: 3 })).toEqual(['review'])
+  expect(ids({ behind: 4 })).toEqual(['rebase'])
+  expect(ids({ behind: 4, branch: 'main' })).toEqual(['next']) // on main itself, nothing to rebase
+  expect(ids({ lastTest: 'fail', ci: 'fail', lastLint: 'fail' })).toEqual(['fix-tests', 'fix-ci', 'fix-lint'])
+})
+
+test('a repo .lavi.json tunes thresholds and the test command', () => {
+  expect(ids({ dirtyFiles: 3 })).toEqual(['next'])
+  expect(advise({ ...base, dirtyFiles: 3 }, NOW, { maxDirtyFiles: 2 }).steps[0]!.id).toBe('commit')
+  expect(advise({ ...base, contextPercent: 50 }, NOW, { contextWrapPercent: 40 }).steps[0]!.id).toBe('wrap')
+  expect(advise({ ...base, editsSinceTest: 1 }, NOW, { testCommand: 'make check' }).steps[0]!.snippets[0]!.text).toContain('`make check`')
+})
+
+test('gh PR status parsing', () => {
+  const pr = (checks: object[], extra = {}) => JSON.stringify({ number: 7, reviewDecision: 'APPROVED', statusCheckRollup: checks, ...extra })
+  expect(parsePr(pr([{ conclusion: 'SUCCESS' }, { state: 'SUCCESS' }]))).toEqual({ ci: 'pass', prNumber: 7, changesRequested: false })
+  expect(parsePr(pr([{ conclusion: 'SUCCESS' }, { conclusion: 'FAILURE' }])).ci).toBe('fail')
+  expect(parsePr(pr([{ status: 'IN_PROGRESS', conclusion: '' }])).ci).toBe('pending')
+  expect(parsePr(pr([])).ci).toBeNull()
+  expect(parsePr(pr([], { reviewDecision: 'CHANGES_REQUESTED' })).changesRequested).toBe(true)
+  expect(parsePr('not json')).toEqual({ ci: null, prNumber: null, changesRequested: false })
+})
+
+test('lint and push command classifiers', () => {
+  expect(isLintCommand('npx tsc --noEmit')).toBe(true)
+  expect(isLintCommand('pnpm run lint')).toBe(true)
+  expect(isLintCommand('ruff check .')).toBe(true)
+  expect(isLintCommand('cat tsconfig.json')).toBe(false)
+  expect(isPushCommand('git push -u origin feat')).toBe(true)
+  expect(isPushCommand('git status')).toBe(false)
+})
+
+test('handoff is offered when wrapping up and when in a good spot', () => {
+  expect(advise({ ...base, contextPercent: 90 }, NOW).steps[0]!.snippets[0]!.action).toBe('handoff')
+  expect(advise(base, NOW).steps[0]!.snippets.some(sn => sn.action === 'handoff')).toBe(true)
+})
+
+test('QA prompt covers tests, security, fixing and a report', () => {
+  for (const w of ['test suite', 'security', 'fix', 'report', "don't commit"]) expect(QA_PROMPT).toContain(w)
+})
+
+test('read-aloud text is plain and capped', () => {
+  expect(speakable('- run `npm test`\n- check **auth.ts**\n```\ncode\n```')).toBe('run npm test check auth.ts')
+  expect(speakable('word '.repeat(300)).length).toBeLessThanOrEqual(601)
 })

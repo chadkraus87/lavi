@@ -1,15 +1,28 @@
-import type { Advice, Answer, Signals, Snippet, Step } from '../types'
+import type { Advice, Answer, LaviConfig, Signals, Snippet, Step } from '../types'
 
-// Tuning knobs.
+// Tuning knobs (a repo's .lavi.json can override the first three).
 export const MAX_DIRTY_FILES = 8
 export const MAX_MINUTES_SINCE_COMMIT = 45
 export const CONTEXT_WRAP_PERCENT = 70
+export const CI_CHECK_EVERY_MS = 5 * 60_000
 
 const TEST_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\bvitest\b|\bjest\b|\bpytest\b|\bgo test\b|\bcargo test\b|\bplaywright test\b|\bswift test\b|\bclaude plugin test\b/
+const LINT_RE = /\btsc\b|\beslint\b|\bbiome\s+(check|lint)\b|\bruff\b|\bmypy\b|\bpyright\b|\bswiftlint\b|\bcargo clippy\b|\bgo vet\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?(lint|typecheck|type-check)\b/
 const CODE_RE = /\.(tsx?|jsx?|mjs|cjs|py|go|rs|swift|rb|java|kt|cs|c|cc|cpp|h|php|vue|svelte|astro)$/
 
 export const isTestCommand = (cmd: string) => TEST_RE.test(cmd)
+export const isLintCommand = (cmd: string) => LINT_RE.test(cmd)
+export const isPushCommand = (cmd: string) => /\bgit\s+push\b/.test(cmd)
 export const isCodeFile = (path: string) => CODE_RE.test(path)
+
+/** The one-click deep check: a full QA pass and security audit, fixing as it goes, ending in a report. */
+export const QA_PROMPT = [
+  'do a full QA pass and security audit of this project, and fix bugs along the way.',
+  '1) QA: run the test suite, typecheck and lint; read the core flows and recent changes looking for real bugs (edge cases, error handling, race conditions, broken assumptions). add or fix tests where it makes sense.',
+  '2) security: review for leaked secrets, injection (shell, SQL, path), unsafe file/process handling, auth and permission gaps, unsafe deserialization, and dependency advisories (use the security-audit skill or /security-review if available).',
+  "3) fix what you find with the smallest correct change, re-run the checks after each fix, and don't commit or push without asking me.",
+  "4) finish with a full report: what you checked, every finding with severity (critical/high/medium/low), what you fixed (files and why), what's left and why, and anything I should decide.",
+].join('\n')
 
 /** Parses `git status --porcelain=v2 --branch`. */
 export function parseGitStatus(out: string) {
@@ -22,34 +35,83 @@ export function parseGitStatus(out: string) {
   return { branch, ahead, dirty }
 }
 
-const snip = (label: string, text: string): Snippet => ({ label, text })
+/** Reads `gh pr view --json number,reviewDecision,statusCheckRollup`. */
+export function parsePr(json: string): Pick<Signals, 'ci' | 'prNumber' | 'changesRequested'> {
+  try {
+    const pr = JSON.parse(json) as { number?: number; reviewDecision?: string; statusCheckRollup?: Record<string, string>[] }
+    const checks = pr.statusCheckRollup ?? []
+    const results = checks.map(c => (c.conclusion || c.state || c.status || '').toUpperCase())
+    const ci = !checks.length ? null
+      : results.some(r => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE'].includes(r)) ? 'fail'
+      : results.some(r => ['PENDING', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'EXPECTED', ''].includes(r)) ? 'pending'
+      : 'pass'
+    return { ci, prNumber: pr.number ?? null, changesRequested: pr.reviewDecision === 'CHANGES_REQUESTED' }
+  } catch {
+    return { ci: null, prNumber: null, changesRequested: false }
+  }
+}
+
+const snip = (label: string, text: string, action?: Snippet['action']): Snippet => (action ? { label, text, action } : { label, text })
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 // Voice: a chill friend. Plain words, the real number/file/command, and the "why" in one breath.
-export function advise(s: Signals, now = Date.now()): Advice {
+export function advise(s: Signals, now = Date.now(), cfg: LaviConfig = {}): Advice {
+  const maxDirty = cfg.maxDirtyFiles ?? MAX_DIRTY_FILES
+  const maxMinutes = cfg.maxMinutesSinceCommit ?? MAX_MINUTES_SINCE_COMMIT
+  const wrapAt = cfg.contextWrapPercent ?? CONTEXT_WRAP_PERCENT
+  const testCmd = cfg.testCommand ? `\`${cfg.testCommand}\`` : 'the tests'
   const steps: Step[] = []
   const dirty = s.dirtyFiles > 0
   const minutesSinceCommit = s.lastCommitAt ? (now - s.lastCommitAt) / 60000 : Infinity
   const sinceCommit = Number.isFinite(minutesSinceCommit) ? `${Math.round(minutesSinceCommit)} min` : 'ever (no commits yet)'
+  const pr = s.prNumber ? `PR #${s.prNumber}` : 'this branch'
 
   if (s.lastTest === 'fail')
     steps.push({
       id: 'fix-tests', mood: 'worried',
       snippets: [
-        snip('fix the root cause', "the tests are failing. run them, show me what broke, and fix the actual cause. don't just patch the test to pass."),
-        snip('explain first', 'run the failing tests and explain in plain words why they fail before changing anything.'),
+        snip('fix the root cause', `the tests are failing. run ${testCmd}, show me what broke, and fix the actual cause. don't just patch the test to pass.`),
+        snip('explain first', `run ${testCmd} and explain in plain words why they fail before changing anything.`),
       ],
-      text: "tests are failing. let's fix those before anything else.",
+      text: "tests are failing. let's fix those first.",
       why: 'piling new changes on top of a broken test makes it way harder to tell what went wrong.',
+    })
+  if (s.ci === 'fail')
+    steps.push({
+      id: 'fix-ci', mood: 'worried',
+      snippets: [
+        snip('fix CI', `CI is failing on ${pr}. look at the failing checks with \`gh pr checks\` and their logs, find the cause, and fix it.`),
+        snip('why is CI red?', `CI is red on ${pr}. explain in plain words which checks fail and why, before changing anything.`),
+      ],
+      text: `CI is red on ${pr}.`,
+      why: "it passed for you but not on the server, so something's different there: env, versions or a test you didn't run.",
+    })
+  if (s.lastLint === 'fail')
+    steps.push({
+      id: 'fix-lint', mood: 'nudge',
+      snippets: [
+        snip('fix types/lint', 'the typecheck or linter is failing. run it, fix every error properly (no blanket ignores), then run it again.'),
+      ],
+      text: 'types or lint are broken.',
+      why: 'these catch real bugs early. fixing them now is quicker than untangling them after more changes.',
+    })
+  if (s.changesRequested)
+    steps.push({
+      id: 'review', mood: 'nudge',
+      snippets: [
+        snip('address review', `read the review comments on ${pr} with gh, then address each one. tell me which ones you disagree with and why.`),
+      ],
+      text: `${pr} has changes requested.`,
+      why: 'a reviewer asked for changes. clearing them gets this merged.',
     })
   if (s.editsSinceTest > 0 && s.lastTest !== 'fail')
     steps.push({
       id: 'run-tests', mood: 'nudge',
       snippets: [
-        snip('run all tests', 'run the tests and fix anything that fails.'),
+        snip('run all tests', `run ${testCmd} and fix anything that fails.`),
         snip('just what changed', 'run only the tests that cover the files we changed this session, and tell me if anything is uncovered.'),
-        snip('write tests', "write tests for what we just built, then run them."),
+        snip('write tests', 'write tests for what we just built, then run them.'),
       ],
       text: 'quick test run?',
       why: `${plural(s.editsSinceTest, 'code edit')} since the last time tests ran. catching a break now is cheap; later it isn't.`,
@@ -63,7 +125,7 @@ export function advise(s: Signals, now = Date.now()): Advice {
       text: `you're working straight on ${s.branch}. spin up a branch first.`,
       why: `a branch is a safe sandbox: if this goes sideways, ${s.branch} stays clean.`,
     })
-  if (dirty && (s.dirtyFiles > MAX_DIRTY_FILES || minutesSinceCommit > MAX_MINUTES_SINCE_COMMIT))
+  if (dirty && (s.dirtyFiles > maxDirty || minutesSinceCommit > maxMinutes))
     steps.push({
       id: 'commit', mood: 'nudge',
       snippets: [
@@ -74,12 +136,21 @@ export function advise(s: Signals, now = Date.now()): Advice {
       text: "good time to save a checkpoint. commit what you've got.",
       why: `${plural(s.dirtyFiles, 'file')} changed and no commit in ${sinceCommit}. a commit is your undo button.`,
     })
-  if (s.contextPercent >= CONTEXT_WRAP_PERCENT)
+  if (s.behind > 0 && s.branch && s.branch !== s.defaultBranch)
+    steps.push({
+      id: 'rebase', mood: 'nudge',
+      snippets: [
+        snip('rebase on main', `rebase this branch onto origin/${s.defaultBranch}, resolve any conflicts carefully, then run ${testCmd}.`),
+      ],
+      text: `${s.defaultBranch} moved on. rebase before you push.`,
+      why: `${plural(s.behind, 'new commit')} on ${s.defaultBranch} you don't have yet. rebasing now keeps conflicts small.`,
+    })
+  if (s.contextPercent >= wrapAt)
     steps.push({
       id: 'wrap', mood: 'nudge',
       snippets: [
+        snip('draft handoff', 'draft a SecondBrain handoff', 'handoff'),
         snip('write a handoff', "write a short handoff: what we did, what's left, and any gotchas, so a fresh session can pick it up."),
-        snip('save to SecondBrain', 'save progress to SecondBrain: update the project note and the session handoff.'),
       ],
       text: `my memory's getting full (${s.contextPercent}%). let's write a quick handoff and start fresh.`,
       why: 'past this point I start forgetting earlier details. a handoff note keeps the important stuff, then /compact or a new session clears space.',
@@ -100,7 +171,7 @@ export function advise(s: Signals, now = Date.now()): Advice {
       snippets: [
         snip("what's next?", "what's the most valuable next thing to work on here? give me 2-3 options with a one-line why for each."),
         snip('quick review', 'review the code we changed this session for bugs, edge cases or rough spots.'),
-        snip('save progress', 'save progress to SecondBrain: update the project note and the session handoff.'),
+        snip('draft handoff', 'draft a SecondBrain handoff', 'handoff'),
       ],
       text: "nice, you're in a good spot. pick the next thing, or save progress to SecondBrain.",
       why: 'everything is committed and nothing is failing.',
@@ -109,7 +180,7 @@ export function advise(s: Signals, now = Date.now()): Advice {
   return { mood: steps[0]!.mood, steps }
 }
 
-/** Splits Ask buddy's reply into the advice and its `PROMPT: label | text` lines. */
+/** Splits Ask Lavi's reply into the advice and its `PROMPT: label | text` lines. */
 export function parseAnswer(reply: string): Answer {
   const snippets: Snippet[] = []
   const keep: string[] = []
@@ -121,4 +192,11 @@ export function parseAnswer(reply: string): Answer {
     snippets.push({ label: rest.length ? label!.trim() : text.split(/\s+/).slice(0, 3).join(' '), text })
   }
   return { text: keep.join('\n').trim(), snippets: snippets.slice(0, 4) }
+}
+
+/** Markdown → plain text for reading aloud, capped so a long answer can't run up the bill. */
+export function speakable(md: string, max = 600) {
+  const t = md.replace(/```[\s\S]*?```/g, ' ').replace(/`([^`]*)`/g, '$1').replace(/[*_#>]+/g, '')
+    .replace(/^\s*[-•]\s*/gm, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim()
+  return t.length > max ? t.slice(0, t.lastIndexOf(' ', max)) + '…' : t
 }

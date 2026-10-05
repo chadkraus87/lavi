@@ -49,6 +49,32 @@ It talks like a chill friend: plain words, the real file, command or number, and
 
 **Ask Lavi** (`/lavi next`) uses the same voice. Its prompt in `register.tsx` still requires the single best next step, the reasoning, the risk, and specific files and commands.
 
+## One-click QA + security pass
+
+**🛡 QA + security** asks Claude for the deep check: run the tests, typecheck and lint, hunt for real bugs, do a security audit (secrets, injection, unsafe file and process handling, auth gaps, dependency advisories), fix what it finds (with no commits unless you say so), and finish with a full report covering severity, what was fixed and what's left.
+- **In a session:** the band button (or press `q` after ctrl+x tab), the pane button, or `/lavi qa`. The prompt drops into your message box, and you press Enter.
+- **From the robot:** menu → *🛡 Full QA + security pass* → *New session in <project>, prompt ready* opens a fresh Claude session with the prompt typed in (not sent), or *Copy the prompt*.
+
+## Smarter advice
+
+On top of the base rules, Lavi also watches for:
+- **CI is red** on this branch's PR
+- **changes requested** in review (both via `gh`, checked at most every 5 min)
+- **types or lint broken** (`tsc`, `eslint`, `ruff`, `mypy`, `pnpm lint`… as Claude runs them)
+- **the default branch moved on**, so rebase before you push (from your last fetch; Lavi never fetches)
+
+**Per-repo `.lavi.json`** (all fields optional):
+
+```json
+{ "quiet": true, "testCommand": "make check", "maxDirtyFiles": 15, "maxMinutesSinceCommit": 90, "contextWrapPercent": 80 }
+```
+
+`quiet` turns off Lavi's voice and pings for that repo; the advice still shows.
+
+**`/lavi doctor`** checks every moving part: git, gh login, the session file, the desktop app, the voice files, hot reload, pings (last result), the last prompt button (box or clipboard), which surfaces are attached (your phone shows as `mobile`), live tracking counters, and `.lavi.json`.
+
+**SecondBrain handoff:** *draft handoff* (in the wrap-up advice, the good-spot advice, the pane, or `/lavi handoff`). Lavi drafts the update for SecondBrain from this session (Done / Decisions / Next / Gotchas) and drops it in your message box to review and send.
+
 ## Lavi's voice
 
 Lavi talks in a chill-friend voice designed in ElevenLabs. The voice is saved as **Lavi** in your ElevenLabs library, id `HCx2PwbeGgmrPl8yw3w0`. The 17 short lines were recorded once (`desktop/voice/voice-*.mp3`; their text is in `desktop/voice/lines.json`) and play offline, so there's no API key on the Mac and no cost per use. Spoken lines carry the gist; the speech bubble shows the exact numbers and names.
@@ -67,7 +93,19 @@ While Lavi talks, its screen-mouth moves with the loudness of the audio. Text ap
 
 **Quiet rules:** at most one line every 20 s, except when you click. Silent in quiet hours (10pm–8am), unless you click. Menu → **Voice** has *Lavi talks* (on/off), Volume low/medium/high, and *Quiet 10pm–8am*.
 
-**Not handled:** macOS doesn't let apps read whether a Focus mode is on, so use mute or quiet hours during meetings.
+**Staying quiet on his own** (Settings):
+- **During calendar events:** reads your Calendar with permission and skips timed events marked busy.
+- **While a Focus is on:** macOS doesn't tell apps about Focus, so add two Shortcuts automations (Shortcuts → Automation → Focus). When the Focus turns on, *Run Shell Script* `mkdir -p ~/.claude/codebuddy && touch ~/.claude/codebuddy/focus-on`; when it turns off, `rm -f ~/.claude/codebuddy/focus-on`. Settings has copy buttons for both.
+
+**Read Ask Lavi answers aloud:** press 🔊 *read it to me* under an answer in the pane. The desktop robot speaks it live in Lavi's voice through ElevenLabs (about a penny per answer, capped at 800 characters). Paste your ElevenLabs API key into Settings once; it is stored only in your login Keychain.
+
+**Morning check-in:** the first time Lavi's around on a new day, he sweeps your projects folder (default `~/Development/Projects`) and shows which repos have uncommitted or unpushed work. Everything is listed under *Across your projects* in the menu; click one to open a new Claude session there. Run it any time with *Check my projects now*.
+
+**Little extras:**
+- a happy hop and line when tests go from red to green, or after a push
+- stretch-break nudges after steady work (off by default)
+- a landing bounce after you drag Lavi
+- ⌃⌥L from anywhere opens Lavi's menu
 
 **Adding or changing a line:** edit `lines.json`, generate it with the Lavi voice (ElevenLabs `eleven_v3`), save it as `voice-<id>.mp3`, then rerun `./install.sh`.
 
@@ -105,14 +143,14 @@ The robot art is in `desktop/art/` (made with Higgsfield; how is in that folder'
 
 | Mood | When |
 |---|---|
-| happy (thumbs up) | good spot |
+| happy (bouncy thumbs up) | good spot, or celebrating |
 | nudge (hand up) | a step is suggested |
-| worried (red face) | tests failing |
-| calm (blinks now and then) | nothing urgent |
+| worried (red face, nervous fidget) | tests or CI failing |
+| calm (sways, nods, blinks) | nothing urgent |
 | busy (`•••`, typing) | Claude is working |
 | sleepy (zZ) | no session, or idle 30+ min |
 
-It bobs gently, and faster while busy. When the system's Reduce Motion setting is on, it stays still. The size is in the menu: Small, Medium or Large.
+Calm, happy and worried play short idle animations; the other moods bob gently, faster while busy. When the system's Reduce Motion setting is on, Lavi stays still. Size goes up to XL (180pt) and XXL (240pt), from the menu or Settings.
 
 ## Desktop menu
 
@@ -124,9 +162,11 @@ Click the character to see:
   - **Opened in the Claude app** (`claude://resume?session=<id>`, which imports a CLI session into the app)
   - **Resumed in Terminal** (`claude --resume <id>`)
   - copied as a resume command
+- **🛡 Full QA + security pass**, **Across your projects** and **Check my projects now**
+- **Settings…** (⌘,): voice, quiet rules, size, shortcut, start at login, break nudges, morning check-in, ElevenLabs key. Or run `open ~/Applications/CodeBuddy.app --args --settings`.
 - **Hide for 1 hour**, **Quit**
 
-Quit means quit: the LaunchAgent restarts the app only after a crash. Drag the character to move it, and it remembers the spot.
+Quit means quit: the LaunchAgent restarts the app only after a crash. Drag the character to move it, and it remembers the spot. If a monitor change leaves Lavi off-screen, he moves back onto a visible screen. Session files older than 7 days (or ended more than a day ago) are cleaned up automatically.
 
 ## Develop
 

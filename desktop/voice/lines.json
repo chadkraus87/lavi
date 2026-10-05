@@ -15,5 +15,11 @@
   "done-2": "all wrapped up over here. want to check it out?",
   "allgood-1": "all good. you're in a nice spot.",
   "allgood-2": "nothing urgent. you're doing great.",
-  "copied": "copied. paste it in and hit enter."
+  "copied": "copied. paste it in and hit enter.",
+  "morning-1": "good morning! here's where your projects stand.",
+  "morning-2": "hey, morning. quick look at your projects before we start.",
+  "celebrate-tests": "nice! tests are green again.",
+  "celebrate-push": "pushed! that's how it's done.",
+  "break": "you've been at it a while. stretch break?",
+  "handoff": "I drafted a handoff for you. give it a look, then hit enter."
 }

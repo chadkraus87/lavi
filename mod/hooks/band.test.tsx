@@ -13,6 +13,7 @@ test('band offers snippets for the top advice', async ($, on) => {
     })
     expect(await ui.find({ key: 'band-0' })).toBeDefined()
     expect(await ui.find({ key: 'band-hide' })).toBeDefined()
+    expect(await ui.find({ key: 'band-qa' })).toBeDefined() // the one-click QA + security pass
     await ui.unmount()
   }
 })
