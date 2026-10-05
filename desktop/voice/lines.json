@@ -21,5 +21,9 @@
   "celebrate-tests": "nice! tests are green again.",
   "celebrate-push": "pushed! that's how it's done.",
   "break": "you've been at it a while. stretch break?",
-  "handoff": "I drafted a handoff for you. give it a look, then hit enter."
+  "handoff": "I drafted a handoff for you. give it a look, then hit enter.",
+  "advice-fix-ci": "CI is red on this branch. let's see what broke.",
+  "advice-fix-lint": "types or lint are broken. quick cleanup?",
+  "advice-review": "your PR has changes requested. let's work through them.",
+  "advice-rebase": "main moved on. let's rebase before you push."
 }

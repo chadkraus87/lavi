@@ -1,5 +1,9 @@
 # CodeBuddy: meet Lavi
 
+![Lavi reading an answer aloud next to a speech bubble](docs/media/lavi-read-aloud.png)
+
+*Demo: [docs/media/lavi-demo.mp4](docs/media/lavi-demo.mp4) (30 s, silent): worried, then tests pass, then reading aloud.*
+
 **Lavi** is a little lavender robot with headphones and a coding buddy that suggests the next step in every Claude Code session. You see it in three places:
 
 - **In the session** (desktop app, CLI, and the phone via Remote Control): a `🤖 lavi: next step` entry on the status line, a band of ready-to-send prompts above the message box, and a `/lavi` pane (`/buddy` works too).
@@ -11,6 +15,15 @@
                                     └─► ~/.claude/codebuddy/sessions/<id>.json
  CodeBuddy.app (LaunchAgent) ─ reads those files ─► floating character + session menu
 ```
+
+## Requirements
+
+- macOS 14 or later, with Xcode's command-line tools (`swiftc`) to build the app
+- [Claude Code](https://claude.com/claude-code), either the desktop app or the CLI. Lavi's brain is a Claude Code mod (function-hooks plugin).
+- Optional: [`gh`](https://cli.github.com/), logged in, for CI and PR advice
+- Optional: an ElevenLabs API key for reading Ask Lavi answers aloud. The everyday voice lines are pre-recorded and included. Read-aloud uses the author's private "Lavi" voice, so to use it, set `laviVoiceID` in `desktop/Speech.swift` to a voice in your own ElevenLabs account.
+
+The app identifiers (`com.chadkraus.codebuddy`) are hardcoded in `Info.plist`, the LaunchAgent and `install.sh`; change them if you fork.
 
 ## Install
 
