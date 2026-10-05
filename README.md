@@ -244,7 +244,7 @@ mod/
   hooks/register.tsx    hooks: tool calls, turns, UI, commands, pings
   hooks/rules.ts        the advice rules, prompts, parsers (pure, tested)
   hooks/pings.ts        ping wording, spam guard, redaction (pure, tested)
-  hooks/*.test.ts(x)    25 tests
+  hooks/*.test.ts(x)    26 tests
 desktop/
   main.swift            the robot: window, moods, bubbles, menu, voice triggers
   Settings.swift        SwiftUI settings window
@@ -261,7 +261,7 @@ install.sh
 
 ```bash
 cd mod
-claude plugin test .        # the mod's 25 tests
+claude plugin test .        # the mod's 26 tests
 claude plugin validate .    # manifest + hooks check
 cd .. && ./install.sh       # rebuild and reinstall the app
 ```
