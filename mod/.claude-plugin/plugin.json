@@ -1,1 +1,13 @@
-{ "name": "codebuddy", "version": "0.1.0", "description": "Coding buddy: deterministic next-step advice per session, a /buddy pane, and state for the desktop character", "types": "./types/index.d.ts" }
+{
+  "name": "codebuddy",
+  "version": "0.1.0",
+  "description": "Coding buddy: deterministic next-step advice per session, a /buddy pane, and state for the desktop character",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Chad Kraus",
+    "url": "https://github.com/chadkraus87"
+  },
+  "homepage": "https://github.com/chadkraus87/lavi",
+  "repository": "https://github.com/chadkraus87/lavi",
+  "license": "MIT"
+}
