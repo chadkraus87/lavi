@@ -366,6 +366,7 @@ final class Bubble: NSPanel {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 300, height: 90), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         isOpaque = false; backgroundColor = .clear; level = .floating; hasShadow = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]; ignoresMouseEvents = true
+        hidesOnDeactivate = false // panels hide when their app isn't active; Lavi is almost never the active app
         contentView = bubbleView
     }
 
@@ -385,7 +386,7 @@ final class Bubble: NSPanel {
         bubbleView.needsDisplay = true
         if !isVisible {
             alphaValue = 0
-            orderFront(nil)
+            orderFrontRegardless()
             NSAnimationContext.runAnimationGroup { $0.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15; animator().alphaValue = 1 }
         }
     }
@@ -409,7 +410,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let hotkey = Hotkey()
     var seenCelebrate: [String: Double] = [:]
     var celebrateUntil = Date.distantPast
-    var lastSayAt: Double = -1 // read-aloud requests already handled (-1: not read yet)
+    var lastSayAt: Double = 0 // newest read-aloud request already handled
     var activeSince: Date? // steady work, for break nudges
     var lastBreakNudge = Date()
     var checkIn: [ProjectState] = [] // last morning check-in
@@ -417,6 +418,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+        panel.hidesOnDeactivate = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.contentView = view
@@ -431,6 +433,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Settings window edits land in UserDefaults; apply size and hotkey changes live.
         NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.applySettings() }
         installEditMenu()
+        // Requests already in say.json at launch are old: don't replay them. (A missing file means none, so the first press counts.)
+        lastSayAt = ((try? Data(contentsOf: sayFile)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["at"] as? Double) ?? 0
         Hotkey.onPress = { [weak self] in self?.showMenu(at: nil) }
         applySettings()
         // `open ~/Applications/CodeBuddy.app --args --settings` opens Settings straight away.
@@ -585,7 +589,6 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let data = try? Data(contentsOf: sayFile),
               let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = req["text"] as? String, let at = req["at"] as? Double else { return }
-        if lastSayAt < 0 { lastSayAt = at; return } // don't replay an old request at launch
         guard at > lastSayAt else { return }
         lastSayAt = at
         bubble.show("reading it out…", detail: String(text.prefix(140)) + (text.count > 140 ? "…" : ""), near: panel.frame)
@@ -594,7 +597,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch result {
             case .success(let mp3):
                 let secs = self.voice.play(mp3) ?? 3
-                DispatchQueue.main.asyncAfter(deadline: .now() + secs + 0.5) { [weak self] in self?.bubble.orderOut(nil) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + max(secs + 0.8, 4)) { [weak self] in self?.bubble.orderOut(nil) }
             case .failure(let e):
                 self.bubble.show("can't read it out yet", detail: e.message, near: self.panel.frame)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 7) { [weak self] in self?.bubble.orderOut(nil) }
