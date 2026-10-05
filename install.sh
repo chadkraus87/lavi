@@ -52,6 +52,16 @@ cp "$ROOT/desktop/Info.plist" "$BUILD/Contents/"
 mkdir -p "$BUILD/Contents/Resources" && cp "$ROOT"/desktop/art/*.png "$BUILD/Contents/Resources/"
 cp "$ROOT"/desktop/voice/*.mp3 "$BUILD/Contents/Resources/"
 swiftc -O -swift-version 5 "$ROOT"/desktop/*.swift -o "$BUILD/Contents/MacOS/CodeBuddy"
+# Signed with a stable certificate, every rebuild is "the same app" to macOS, so the Keychain key and calendar
+# permission stay granted. Uses LAVI_SIGN_IDENTITY, else your first Apple Development / Developer ID certificate,
+# else stays ad-hoc (which works, but macOS asks again after each rebuild).
+IDENTITY="${LAVI_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+if [ -n "$IDENTITY" ] && codesign --force --sign "$IDENTITY" "$BUILD" 2>/dev/null; then
+  echo "Signed with: $IDENTITY"
+else
+  codesign --force --sign - "$BUILD"
+  echo "Ad-hoc signed (no signing certificate found)."
+fi
 mkdir -p "$HOME/Applications"; rm -rf "$APP"; cp -R "$BUILD" "$APP"
 
 echo "Installing LaunchAgent…"

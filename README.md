@@ -144,6 +144,7 @@ cd lavi
 
 The installer:
 1. builds `~/Applications/CodeBuddy.app` from source
+   - signs it with your Apple Development or Developer ID certificate if you have one (or set `LAVI_SIGN_IDENTITY`). That way macOS keeps the Keychain and Calendar permissions across rebuilds. Without a certificate it's ad-hoc signed, which works, but macOS asks again after each rebuild.
 2. installs a LaunchAgent so Lavi starts at login
 3. adds the mod folder to `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json`, keeping your existing entries. Your original settings are saved once as `settings.json.codebuddy-backup`, and the file is replaced atomically.
 
