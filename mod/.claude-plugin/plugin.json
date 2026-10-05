@@ -1,6 +1,6 @@
 {
   "name": "codebuddy",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Lavi, a coding buddy for Claude Code: next-step advice with one-click prompts, a pre-commit safety check, a /lavi pane, phone pings, and the state the desktop robot shows",
   "types": "./types/index.d.ts",
   "author": {

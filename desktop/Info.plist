@@ -6,7 +6,7 @@
   <key>CFBundleIdentifier</key><string>com.chadkraus.codebuddy</string>
   <key>CFBundleName</key><string>CodeBuddy</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleShortVersionString</key><string>0.2.1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSCalendarsFullAccessUsageDescription</key><string>Lavi stays quiet while you're in a calendar event (only if you turn it on in Settings).</string>
