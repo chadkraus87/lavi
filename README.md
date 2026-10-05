@@ -103,7 +103,7 @@ Each piece of advice offers 2–3 prompts, for example *run all tests*, *just wh
 
 **He stays quiet** when muted, in quiet hours (10pm–8am by default), during calendar events (optional), while a Focus mode is on (automatic, see [Focus modes](#focus-modes)), in repos marked quiet, and never more often than every 20 seconds. Clicking him still works in quiet hours. Muting him (Settings → *Lavi talks*) silences everything.
 
-**Read answers aloud (optional).** 🔊 *read it to me* under an Ask Lavi answer speaks it live in his voice through ElevenLabs. That takes your own API key and costs about 1 credit per character, capped at 600 characters per answer.
+**Read answers aloud (optional).** 🔊 *read it to me* under an Ask Lavi answer speaks it live in his voice through ElevenLabs' Eleven v4 Turbo. The audio streams in, so he starts talking in well under a second. It takes your own API key and costs credits per character, capped at 600 characters per answer.
 
 **Also:**
 - **Speech bubbles:** cartoon callouts.
@@ -248,7 +248,7 @@ mod/
 desktop/
   main.swift            the robot: window, moods, bubbles, menu, voice triggers
   Settings.swift        SwiftUI settings window
-  Speech.swift          ElevenLabs read-aloud + Keychain
+  Speech.swift          ElevenLabs read-aloud (streamed) + Keychain
   Quiet.swift           calendar and Focus quiet
   Projects.swift        morning check-in scan
   Hotkey.swift          ⌃⌥L

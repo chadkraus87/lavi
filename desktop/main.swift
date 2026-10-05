@@ -132,6 +132,7 @@ let talkFrames: [NSImage] = ["talk_a", "talk_b"].compactMap { n in
 /// Quiet when muted, in quiet hours (except when you click), or within 20 s of the last line.
 final class Voice: NSObject, AVAudioPlayerDelegate {
     private var player: AVAudioPlayer?
+    private var stream: StreamPlayer?
     private var lastSpoke = Date.distantPast
     let minGap: TimeInterval = 20
     var onFinish: (() -> Void)?
@@ -142,7 +143,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
     }
     var volume: Float {
         get { Prefs.volume }
-        set { Prefs.d.set(Double(newValue), forKey: "voiceVolume"); player?.volume = newValue }
+        set { Prefs.d.set(Double(newValue), forKey: "voiceVolume"); player?.volume = newValue; stream?.volume = newValue }
     }
     var quietHoursOn: Bool {
         get { Prefs.quietHours }
@@ -154,7 +155,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
         let h = Calendar.current.component(.hour, from: Date())
         return (quietHoursOn && (h >= quietFrom || h < quietUntil)) || Quiet.inMeeting || Quiet.inFocus
     }
-    var isSpeaking: Bool { player?.isPlaying ?? false }
+    var isSpeaking: Bool { (player?.isPlaying ?? false) || (stream?.isPlaying ?? false) }
 
     /// All recordings for a line id: "voice-greeting-1.mp3", "voice-greeting-2.mp3" … or just "voice-push.mp3".
     private func files(for id: String) -> [URL] {
@@ -174,15 +175,18 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
         return start(p)
     }
 
-    /// Plays audio you asked for (a read-aloud answer): mute still applies, nothing else.
-    @discardableResult
-    func play(_ data: Data) -> TimeInterval? {
-        guard isOn, let p = try? AVAudioPlayer(data: data) else { return nil }
-        return start(p)
+    /// A player for audio you asked for (a read-aloud answer) that plays as it streams in: mute still applies, nothing else.
+    func beginStream() -> StreamPlayer? {
+        guard isOn, let s = StreamPlayer(volume: volume) else { return nil }
+        player?.stop(); stream?.stop()
+        s.onFinish = { [weak self] in self?.onFinish?() }
+        stream = s
+        lastSpoke = Date()
+        return s
     }
 
     private func start(_ p: AVAudioPlayer) -> TimeInterval {
-        player?.stop()
+        player?.stop(); stream?.stop()
         p.volume = volume
         p.isMeteringEnabled = true
         p.delegate = self
@@ -194,6 +198,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
 
     /// Loudness 0…1 of what's playing right now, for the mouth.
     func level() -> Float {
+        if let s = stream, s.isPlaying { return s.level() }
         guard let p = player, p.isPlaying else { return 0 }
         p.updateMeters()
         return max(0, min(1, (p.averagePower(forChannel: 0) + 40) / 40))
@@ -638,18 +643,22 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         func status(_ s: String) { try? "\(Date().formatted(date: .abbreviated, time: .standard)): \(s)".write(to: readStatusFile, atomically: true, encoding: .utf8) }
         status("asked ElevenLabs (\(text.count) characters)…")
         let preview = String(text.prefix(140)) + (text.count > 140 ? "…" : "")
-        bubble.flash("reading it out…", detail: preview, near: panel.frame, for: 35) // up to the request timeout
-        Speech.synthesize(text) { [weak self] result in
+        // Checked before asking ElevenLabs, so a muted Lavi never spends credits.
+        guard let stream = voice.beginStream() else {
+            status("didn't ask: Lavi's voice is off (or no audio output)")
+            bubble.flash("my voice is off", detail: "turn it on in Lavi's settings to hear answers.", near: panel.frame, for: 6)
+            return
+        }
+        bubble.flash("reading it out…", detail: preview, near: panel.frame, for: 35) // up to the timeout; trimmed once all audio is in
+        let asked = Date()
+        Speech.stream(text, into: stream) { [weak self] err in
             guard let self else { return }
-            switch result {
-            case .success(let mp3):
-                let played = self.voice.play(mp3)
-                status(played == nil ? "got \(mp3.count) bytes but didn't play (Lavi's voice is off?)" : "played \(String(format: "%.1f", played!)) s of audio")
-                let secs = played ?? 3
-                self.bubble.flash("reading it out…", detail: preview, near: self.panel.frame, for: max(secs + 0.8, 4))
-            case .failure(let e):
-                status("failed: \(e.message)")
-                self.bubble.flash("can't read it out yet", detail: e.message, near: self.panel.frame, for: 7)
+            if let err {
+                status("failed: \(err.message)")
+                if !stream.started { self.bubble.flash("can't read it out yet", detail: err.message, near: self.panel.frame, for: 7) }
+            } else {
+                status("streamed \(String(format: "%.1f", stream.seconds)) s of audio in \(String(format: "%.1f", Date().timeIntervalSince(asked))) s (Eleven v4 Turbo)")
+                self.bubble.flash("reading it out…", detail: preview, near: self.panel.frame, for: max(stream.remaining + 0.8, 2))
             }
         }
     }
